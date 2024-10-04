@@ -9,8 +9,56 @@ repository = "https://github.com/Alzymologist/Kalatori-backend"
 readme = true
 keywords = ["substrate", "blockchain", "finance", "service", "middleware"]
 categories = ["finance"]
+rust-version = "1.81"
 
 [dependencies]
+shadow-rs = { version = "0.35", default-features = false }
+names = { version = "0.14", default-features = false }
+toml_edit = { version = "0.22", default-features = false, features = [
+    "serde",
+    "parse",
+    "perf",
+] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+codec = { package = "parity-scale-codec", version = "3", features = [
+    "chain-error",
+    "derive",
+] }
+serde = { version = "1", features = ["derive", "rc"] }
+zeroize = { version = "1", features = ["derive"] }
+clap = { version = "4", features = [
+    "derive",
+    "cargo",
+    "env",
+    "string",
+    "wrap_help",
+    "deprecated",
+] }
+jsonrpsee = { version = "0.24", features = ["ws-client"] }
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "time"] }
+serde_json = { version = "1", features = ["raw_value"] }
+tracing = "0.1"
+thiserror = "1"
+ahash = "0.8"
+redb = "2"
+arrayvec = "0.7"
+indexmap = "2"
+time = "0.3"
+const-hex = "1"
+const_format = "0.2"
+ruint = "1"
+frame-metadata = "16"
+rand = "0.8"
+paste = "1"
+scale-info = "2"
+indoc = "2"
+async-lock = "3"
+scale-encode = { version = "0.7", default-features = false, features = ["std"] }
+scale-decode = { version = "0.13", default-features = false, features = ["std", "derive"] }
+scale-type-resolver = "0.2"
+hasher = { package = "sp-crypto-hashing", version = "0.1" }
+
 axum = { version = "0.7", default-features = false, features = [
     "tokio",
     "http1",
@@ -18,35 +66,8 @@ axum = { version = "0.7", default-features = false, features = [
     "json",
     "matched-path",
 ] }
-tracing-subscriber = { version = "0.3", default-features = false, features = [
-    "smallvec",
-    "ansi",
-    "env-filter",
-    "time",
-] }
 ureq = { version = "2", default-features = false, features = ["json"] }
-names = { version = "0.14", default-features = false }
-tokio-util = { version = "0.7", features = ["rt"] }
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-tracing = "0.1"
-scale-info = "2"
 axum-macros = "0.4"
-primitive-types = { version = "0.12", features = ["codec"] }
-jsonrpsee = { version = "0.23", features = ["ws-client"] }
-thiserror = "1"
-frame-metadata = "16"
-hex = "0.4"
-parity-scale-codec = "3"
-serde_json = "1"
-sp-crypto-hashing = "0.1"
-toml_edit = { version = "0.22", features = ["serde"]}
-sled = "0.34"
-zeroize = "1.7"
-clap = { version = "4", features = ["derive", "cargo", "string", "env"] }
-shadow-rs = { version = "0.28", default-features = false }
-futures = "0.3"
-ahash = "0.8"
 
 substrate_parser = { git = "https://github.com/Alzymologist/substrate-parser" }
 substrate-constructor = { git = "https://github.com/Alzymologist/substrate-constructor" }
@@ -54,18 +75,14 @@ mnemonic-external = { git = "https://github.com/Alzymologist/mnemonic-external" 
 substrate-crypto-light = { git = "https://github.com/Alzymologist/substrate-crypto-light" }
 
 [build-dependencies]
-shadow-rs = { version = "0.28", default-features = false, features = ["git2"] }
-
-[dev-dependencies]
-reqwest = { version = "0.12", features = ["json"] }
-lazy_static = "1"
-indoc = "2"
+shadow-rs = { version = "0.35", default-features = false }
 
 [profile.release]
 strip = true
 lto = true
 codegen-units = 1
 panic = "abort"
+overflow-checks = true
 
 [lints.rust]
 future_incompatible = "warn"
@@ -76,6 +93,7 @@ unused = "warn"
 rust-2024-compatibility = { level = "warn", priority = -1 }
 
 [lints.clippy]
+allow_attributes = "warn"
 shadow_reuse = "warn"
 shadow_same = "warn"
 shadow_unrelated = "warn"

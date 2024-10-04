@@ -2,32 +2,32 @@
 
 use crate::{
     chain::{
-        definitions::{BlockHash, EventFilter},
+        definitions::EventFilter,
         utils::{
             asset_balance_query, block_number_query, events_entry_metadata, hashed_key_element,
             system_balance_query, system_properties_to_short_specs,
         },
     },
-    definitions::api_v2::CurrencyProperties,
-    definitions::{
-        api_v2::{AssetId, TokenKind},
+    chain_wip::definitions::{BlockHash, H256},
+    error::{ChainError, NotHex},
+    server::definitions::{
+        api_v2::{AssetId, CurrencyProperties, TokenKind},
         Balance,
     },
-    error::{ChainError, NotHex},
     utils::unhex,
 };
+use codec::{DecodeAll, Encode};
 use frame_metadata::{
     v15::{RuntimeMetadataV15, StorageEntryMetadata, StorageEntryType},
     RuntimeMetadata,
 };
+use hasher::twox_128;
 use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClient;
-use parity_scale_codec::{DecodeAll, Encode};
 use scale_info::{form::PortableForm, PortableRegistry, TypeDef, TypeDefPrimitive};
 use serde::Deserialize;
 use serde_json::{Number, Value};
-use sp_crypto_hashing::twox_128;
 use std::{collections::HashMap, fmt::Debug};
 use substrate_crypto_light::common::AccountId32;
 use substrate_parser::{
@@ -60,7 +60,7 @@ pub async fn runtime_version_identifier(
     block: &BlockHash,
 ) -> Result<Value, ChainError> {
     let value = client
-        .request("state_getRuntimeVersion", rpc_params![block.to_string()])
+        .request("state_getRuntimeVersion", rpc_params![block])
         .await?;
     Ok(value)
 }
@@ -81,10 +81,7 @@ pub async fn get_value_from_storage(
     block: &BlockHash,
 ) -> Result<Value, ChainError> {
     let value: Value = client
-        .request(
-            "state_getStorage",
-            rpc_params![whole_key, block.to_string()],
-        )
+        .request("state_getStorage", rpc_params![whole_key, block])
         .await?;
     Ok(value)
 }
@@ -98,8 +95,8 @@ pub async fn get_keys_from_storage(
     let mut keys_vec = Vec::new();
     let storage_key_prefix = format!(
         "0x{}{}",
-        hex::encode(twox_128(prefix.as_bytes())),
-        hex::encode(twox_128(storage_name.as_bytes()))
+        const_hex::encode(twox_128(prefix.as_bytes())),
+        const_hex::encode(twox_128(storage_name.as_bytes()))
     );
 
     let count = 10; // TODO make full scan just in case
@@ -116,7 +113,7 @@ pub async fn get_keys_from_storage(
             params.push(serde_json::to_value(start_key.clone()).unwrap());
         }
 
-        params.push(serde_json::to_value(block.to_string()).unwrap());
+        params.push(serde_json::to_value(block).unwrap());
         if let Ok(keys) = client.request("state_getKeysPaged", params).await {
             if let Value::Array(ref keys_inside) = keys {
                 if keys_inside.len() == 0 {
@@ -147,14 +144,13 @@ pub async fn get_keys_from_storage(
 /// H256 format
 pub async fn genesis_hash(client: &WsClient) -> Result<BlockHash, ChainError> {
     let genesis_hash_request: Value = client
-        .request(
-            "chain_getBlockHash",
-            rpc_params![Value::Number(Number::from(0u8))],
-        )
+        .request("chain_getBlockHash", rpc_params![0])
         .await
         .map_err(ChainError::Client)?;
     match genesis_hash_request {
-        Value::String(x) => BlockHash::from_str(&x),
+        Value::String(x) => H256::from_hex(x)
+            .map_err(|_| ChainError::BlockHashLength)
+            .map(BlockHash),
         _ => return Err(ChainError::GenesisHashFormat),
     }
 }
@@ -175,7 +171,9 @@ pub async fn block_hash(
         .await
         .map_err(ChainError::Client)?;
     match block_hash_request {
-        Value::String(x) => BlockHash::from_str(&x),
+        Value::String(x) => H256::from_hex(x)
+            .map_err(|_| ChainError::BlockHashLength)
+            .map(BlockHash),
         _ => return Err(ChainError::BlockHashFormat),
     }
 }
@@ -188,11 +186,7 @@ pub async fn metadata(
     let metadata_request: Value = client
         .request(
             "state_call",
-            rpc_params![
-                "Metadata_metadata_at_version",
-                "0x0f000000",
-                block.to_string()
-            ],
+            rpc_params!["Metadata_metadata_at_version", "0x0f000000", block],
         )
         .await
         .map_err(ChainError::Client)?;
@@ -228,7 +222,7 @@ pub async fn specs(
     block: &BlockHash,
 ) -> Result<ShortSpecs, ChainError> {
     let specs_request: Value = client
-        .request("system_properties", rpc_params![block.to_string()])
+        .request("system_properties", rpc_params![block])
         .await?;
     match specs_request {
         Value::Object(properties) => system_properties_to_short_specs(&properties, &metadata),
@@ -272,18 +266,6 @@ pub async fn assets_set_at_block(
     let mut assets_set = HashMap::new();
     let chain_name =
         <RuntimeMetadataV15 as AsMetadata<()>>::spec_name_version(metadata_v15)?.spec_name;
-    assets_set.insert(
-        specs.unit,
-        CurrencyProperties {
-            chain_name: chain_name.clone(),
-            kind: TokenKind::Balances,
-            decimals: specs.decimals,
-            rpc_url: rpc_url.to_owned(),
-            asset_id: None,
-            ss58: specs.base58prefix,
-        },
-    );
-
     let mut assets_asset_storage_metadata = None;
     let mut assets_metadata_storage_metadata = None;
 
@@ -384,11 +366,13 @@ pub async fn assets_set_at_block(
                                                 TypeDef::Primitive(TypeDefPrimitive::U32) => {
                                                     let key_assets_metadata = format!(
                                                         "0x{}{}{}",
-                                                        hex::encode(twox_128("Assets".as_bytes())),
-                                                        hex::encode(twox_128(
+                                                        const_hex::encode(twox_128(
+                                                            "Assets".as_bytes()
+                                                        )),
+                                                        const_hex::encode(twox_128(
                                                             "Metadata".as_bytes()
                                                         )),
-                                                        hex::encode(hashed_key_element(
+                                                        const_hex::encode(hashed_key_element(
                                                             &asset_id.encode(),
                                                             hasher
                                                         ))
@@ -579,7 +563,7 @@ pub async fn asset_balance_at_account(
             Err(ChainError::AssetBalanceFormat)
         }
     } else {
-        Err(ChainError::StorageValueFormat(value_fetch))
+        Ok(Balance(0))
     }
 }
 
@@ -621,7 +605,7 @@ pub async fn system_balance_at_account(
         }
     }
 
-    Err(ChainError::BalanceNotFound)
+    Ok(Balance(0))
 }
 
 pub async fn transfer_events(

@@ -4,6 +4,8 @@
 //! priority, optimized for lazy and very delayed process, and in some cases might be disabeled
 //! altogether (TODO)
 
+use std::sync::Arc;
+
 use crate::{
     chain::{
         definitions::Invoice,
@@ -15,8 +17,8 @@ use crate::{
             BalanceTransferConstructor,
         },
     },
-    definitions::api_v2::TokenKind,
     error::ChainError,
+    server::definitions::api_v2::TokenKind,
     signer::Signer,
     state::State,
 };
@@ -33,7 +35,7 @@ pub async fn payout(
     order: Invoice,
     state: State,
     chain: ChainWatcher,
-    signer: Signer,
+    signer: Arc<Signer>,
 ) -> Result<(), ChainError> {
     // TODO: make this retry and rotate RPCs maybe
     //
@@ -52,7 +54,7 @@ pub async fn payout(
         // Payout operation logic
         let transactions = match balance.0 - order.amount.0 {
             a if (0..=loss_tolerance).contains(&a) => match currency.kind {
-                TokenKind::Balances => {
+                TokenKind::Native => {
                     let balance_transfer_constructor = BalanceTransferConstructor {
                         amount: order.amount.0,
                         to_account: &order.recipient,
@@ -101,7 +103,7 @@ pub async fn payout(
                 "{batch_transaction:?}"
             )))?;
 
-        let signature = signer.sign(order.id, sign_this).await?;
+        let signature = signer.sign(order.id, &sign_this)?;
 
         batch_transaction.signature.content =
             TypeContentToFill::SpecialType(SpecialTypeToFill::SignatureSr25519(Some(signature)));
@@ -110,7 +112,7 @@ pub async fn payout(
             .send_this_signed::<(), RuntimeMetadataV15>(&chain.metadata)?
             .ok_or(ChainError::NothingToSend)?;
 
-        send_stuff(&client, &format!("0x{}", hex::encode(extrinsic))).await?;
+        send_stuff(&client, &format!("0x{}", const_hex::encode(extrinsic))).await?;
 
         // TODO obvious
     }

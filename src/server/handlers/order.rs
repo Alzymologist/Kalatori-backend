@@ -1,8 +1,8 @@
 use crate::{
-    definitions::api_v2::{
+    error::{ForceWithdrawalError, OrderError},
+    server::definitions::api_v2::{
         InvalidParameter, OrderQuery, OrderResponse, OrderStatus, AMOUNT, CURRENCY,
     },
-    error::{ForceWithdrawalError, OrderError},
     state::State,
 };
 use axum::{
@@ -26,7 +26,7 @@ pub async fn process_order(
     payload: OrderPayload,
 ) -> Result<OrderResponse, OrderError> {
     if payload.amount < 0.07 {
-        return Err(OrderError::LessThanExistentialDeposit(0.07));
+        return Err(OrderError::ExistentialDeposit(0.07));
     }
 
     state
@@ -54,7 +54,7 @@ pub async fn order(
             OrderResponse::NotFound => (StatusCode::NOT_FOUND, "").into_response(),
         },
         Err(error) => match error {
-            OrderError::LessThanExistentialDeposit(existential_deposit) => (
+            OrderError::ExistentialDeposit(existential_deposit) => (
                 StatusCode::BAD_REQUEST,
                 Json([InvalidParameter {
                     parameter: AMOUNT.into(),
@@ -70,23 +70,7 @@ pub async fn order(
                 }]),
             )
                 .into_response(),
-            OrderError::MissingParameter(parameter) => (
-                StatusCode::BAD_REQUEST,
-                Json([InvalidParameter {
-                    parameter,
-                    message: "parameter wasn't found".into(),
-                }]),
-            )
-                .into_response(),
-            OrderError::InvalidParameter(parameter) => (
-                StatusCode::BAD_REQUEST,
-                Json([InvalidParameter {
-                    parameter,
-                    message: "parameter's format is invalid".into(),
-                }]),
-            )
-                .into_response(),
-            OrderError::InternalError => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         },
     }
 }

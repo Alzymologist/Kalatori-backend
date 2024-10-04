@@ -1,5 +1,4 @@
-use crate::definitions::api_v2::ServerStatus;
-use crate::state::State;
+use crate::{server::definitions::api_v2::ServerStatus, state::State};
 use axum::{extract::State as ExtractState, http::StatusCode, Json};
 
 pub async fn status(

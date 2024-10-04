@@ -1,6 +1,6 @@
 //! A tracker that follows individual chain
 
-use std::{collections::HashMap, time::SystemTime};
+use std::{collections::HashMap, sync::Arc, time::SystemTime};
 
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
@@ -13,8 +13,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    arguments::Chain,
     chain::{
-        definitions::{BlockHash, ChainTrackerRequest, Invoice},
+        definitions::{ChainTrackerRequest, Invoice},
         payout::payout,
         rpc::{
             assets_set_at_block, block_hash, genesis_hash, metadata, next_block, next_block_number,
@@ -22,11 +23,12 @@ use crate::{
         },
         utils::was_balance_received_at_account,
     },
-    definitions::{api_v2::CurrencyProperties, Chain},
+    chain_wip::definitions::BlockHash,
     error::ChainError,
+    server::definitions::api_v2::{CurrencyProperties, TokenKind},
     signer::Signer,
     state::State,
-    task_tracker::TaskTracker,
+    utils::task_tracker::TaskTracker,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -35,32 +37,32 @@ pub fn start_chain_watch(
     chain_tx: mpsc::Sender<ChainTrackerRequest>,
     mut chain_rx: mpsc::Receiver<ChainTrackerRequest>,
     state: State,
-    signer: Signer,
+    signer: Arc<Signer>,
     task_tracker: TaskTracker,
     cancellation_token: CancellationToken,
 ) {
     task_tracker
         .clone()
-        .spawn(format!("Chain {} watcher", chain.name.clone()), async move {
+        .spawn(format!("Chain {} watcher", chain.name.clone().0), async move {
             let watchdog = 120000;
             let mut watched_accounts = HashMap::new();
             let mut shutdown = false;
             // TODO: random pick instead
-            for endpoint in chain.endpoints.iter().cycle() {
+            for endpoint in chain.config.endpoints.iter().cycle() {
                 // not restarting chain if shutdown is in progress
                 if shutdown || cancellation_token.is_cancelled() {
                     break;
                 }
-                if let Ok(client) = WsClientBuilder::default().build(endpoint).await {
+                if let Ok(client) = WsClientBuilder::default().build(&endpoint.0).await {
                     // prepare chain
-                    let watcher = match ChainWatcher::prepare_chain(&client, chain.clone(), &mut watched_accounts, endpoint, chain_tx.clone(), state.interface(), task_tracker.clone())
+                    let watcher = match ChainWatcher::prepare_chain(&client, chain.clone(), &mut watched_accounts, &endpoint.0, chain_tx.clone(), state.interface(), task_tracker.clone())
                         .await
                     {
                         Ok(a) => a,
                         Err(e) => {
                             tracing::warn!(
                                 "Failed to connect to chain {}, due to {} switching RPC server...",
-                                chain.name,
+                                chain.name.0,
                                 e
                             );
                             continue;
@@ -80,14 +82,14 @@ pub fn start_chain_watch(
                                     Err(e) => {
                                         tracing::info!(
                                             "Failed to receive block in chain {}, due to {}; Switching RPC server...",
-                                            chain.name,
+                                            chain.name.0,
                                             e
                                         );
                                         break;
                                     },
                                 };
 
-                                tracing::debug!("Block hash {} from {}", block.to_string(), chain.name);
+                                tracing::debug!("Block hash {} from {}", block.0, chain.name.0);
 
                                 if watcher.version != runtime_version_identifier(&client, &block).await? {
                                     tracing::info!("Different runtime version reported! Restarting connection...");
@@ -108,6 +110,7 @@ pub fn start_chain_watch(
                                             if events.iter().any(|event| was_balance_received_at_account(&invoice.address, &event.0.fields)) {
                                                 match invoice.check(&client, &watcher, &block).await {
                                                     Ok(true) => {
+                                                        tracing::debug!("order paid");
                                                         state.order_paid(id.clone()).await;
                                                         id_remove_list.push(id.to_owned());
                                                     }
@@ -116,9 +119,7 @@ pub fn start_chain_watch(
                                                         tracing::warn!("account fetch error: {0:?}", e);
                                                     }
                                                 }
-                                            }
-
-                                            if invoice.death.0 >= now {
+                                            } else if invoice.death.as_millis() <= now {
                                                 match invoice.check(&client, &watcher, &block).await {
                                                     Ok(paid) => {
                                                         if paid {
@@ -134,15 +135,16 @@ pub fn start_chain_watch(
                                             }
                                         }
                                         for id in id_remove_list {
+                                            tracing::debug!("removing {id}");
                                             watched_accounts.remove(&id);
                                         }
                                     },
                                     Err(e) => {
-                                        tracing::warn!("Events fetch error {e} at {}", chain.name);
+                                        tracing::warn!("Events fetch error {e} at {}", chain.name.0);
                                         break;
                                     },
                                     }
-                                tracing::debug!("Block {} from {} processed successfully", block.to_string(), chain.name);
+                                tracing::debug!("Block {} from {} processed successfully", block.0, chain.name.0);
                             }
                             ChainTrackerRequest::WatchAccount(request) => {
                                 watched_accounts.insert(request.id.clone(), Invoice::from_request(request));
@@ -152,10 +154,13 @@ pub fn start_chain_watch(
                                 let rpc = endpoint.clone();
                                 let reap_state_handle = state.interface();
                                 let watcher_for_reaper = watcher.clone();
-                                let signer_for_reaper = signer.interface();
+                                let signer_for_reaper = signer.clone();
                                 task_tracker.clone().spawn(format!("Initiate payout for order {}", id.clone()), async move {
-                                    payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
-                                    Ok(format!("Payout attempt for order {id} terminated").into())
+                                    let result = payout(rpc.0.as_ref().to_owned(), Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
+                                    if let Err(er) = result {
+                                        tracing::error!("{:?}", er);
+                                    }
+                                    Ok(format!("Payout attempt for order {id} terminated"))
                                 });
                             }
                             ChainTrackerRequest::Shutdown(res) => {
@@ -167,11 +172,11 @@ pub fn start_chain_watch(
                     }
                 }
             }
-            Ok(format!("Chain {} monitor shut down", chain.name).into())
+            Ok(format!("Chain {} monitor shut down", chain.name.0))
         });
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ChainWatcher {
     pub genesis_hash: BlockHash,
     pub metadata: RuntimeMetadataV15,
@@ -181,6 +186,7 @@ pub struct ChainWatcher {
 }
 
 impl ChainWatcher {
+    #[allow(clippy::too_many_lines)]
     pub async fn prepare_chain(
         client: &WsClient,
         chain: Chain,
@@ -196,9 +202,9 @@ impl ChainWatcher {
         let version = runtime_version_identifier(client, &block).await?;
         let metadata = metadata(&client, &block).await?;
         let name = <RuntimeMetadataV15 as AsMetadata<()>>::spec_name_version(&metadata)?.spec_name;
-        if name != chain.name {
+        if *name != *chain.name.0 {
             return Err(ChainError::WrongNetwork {
-                expected: chain.name,
+                expected: chain.name.0.to_string(),
                 actual: name,
                 rpc: rpc_url.to_string(),
             });
@@ -210,27 +216,51 @@ impl ChainWatcher {
         // TODO: make this verbosity less annoying
         tracing::info!(
             "chain {} requires native token {:?} and {:?}",
-            &chain.name,
-            &chain.native_token,
-            &chain.asset
+            &chain.name.0,
+            &chain.config.inner.native,
+            &chain.config.inner.asset
         );
+
         // Remove unwanted assets
-        assets.retain(|name, properties| {
-            tracing::info!(
-                "chain {} has token {} with properties {:?}",
-                &chain.name,
-                &name,
-                &properties
-            );
-            if let Some(native_token) = &chain.native_token {
-                (native_token.name == *name) && (native_token.decimals == specs.decimals)
-            } else {
+
+        assets = assets
+            .into_iter()
+            .filter_map(|(name, properties)| {
+                tracing::info!(
+                    "chain {} has token {} with properties {:?}",
+                    &chain.name.0,
+                    &name,
+                    &properties
+                );
+
                 chain
+                    .config
+                    .inner
                     .asset
                     .iter()
-                    .any(|a| (a.name == *name) && (Some(a.id) == properties.asset_id))
+                    .find(|a| Some(a.id.0) == properties.asset_id)
+                    .map(|a| (a.name.clone(), properties))
+            })
+            .collect();
+
+        if let Some(native_token) = chain.config.inner.native.clone() {
+            if native_token.decimals.0 == specs.decimals {
+                assets.insert(
+                    native_token.name,
+                    CurrencyProperties {
+                        chain_name: <RuntimeMetadataV15 as AsMetadata<()>>::spec_name_version(
+                            &metadata,
+                        )?
+                        .spec_name,
+                        kind: TokenKind::Native,
+                        decimals: specs.decimals,
+                        rpc_url: rpc_url.to_owned(),
+                        asset_id: None,
+                        ss58: 0,
+                    },
+                );
             }
-        });
+        }
 
         // Deduplication is done on chain manager level;
         // Check that we have same number of assets as requested (we've checked that we have only
@@ -241,8 +271,10 @@ impl ChainWatcher {
         //
         // TODO: maybe check if at least one endpoint responds with proper assets and if not, shut
         // down
-        if assets.len() != chain.asset.len() + if chain.native_token.is_some() { 1 } else { 0 } {
-            return Err(ChainError::AssetsInvalid(chain.name));
+        if assets.len()
+            != chain.config.inner.asset.len() + usize::from(chain.config.inner.native.is_some())
+        {
+            return Err(ChainError::AssetsInvalid(chain.name.0.to_string()));
         }
         // this MUST assert that assets match exactly before reporting it
 
@@ -295,7 +327,7 @@ impl ChainWatcher {
             }
             // this should reset chain monitor on timeout;
             // but if this breaks, it means that the latter is already down either way
-            Ok(format!("Block watch at {rpc} stopped").into())
+            Ok(format!("Block watch at {rpc} stopped"))
         });
 
         Ok(chain)

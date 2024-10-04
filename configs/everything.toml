@@ -1,0 +1,192 @@
+account-lifetime = 86400000 # 1 day.
+restart-gap = 3600000       # 1 hour.
+
+[[chain]]
+name = "polkadot"
+native-token = "DOT"
+decimals = 10
+endpoints = ["wss://rpc.polkadot.io", "wss://1rpc.io/dot"]
+
+[[chain]]
+name = "assethub-polkadot"
+endpoints = [
+    "wss://polkadot-asset-hub-rpc.polkadot.io",
+    "wss://statemint-rpc.dwellir.com",
+]
+
+[[chain.asset]]
+name = "USDC"
+id = 1337
+
+[[chain.asset]]
+name = "USDT"
+id = 1984
+
+[[chain]]
+name = "acala"
+native-token = "ACA"
+decimals = 12
+endpoints = ["wss://acala-rpc.dwellir.com"]
+
+[[chain]]
+name = "ajuna"
+native-token = "AJUN"
+decimals = 12
+endpoints = ["wss://ajuna.api.onfinality.io/public-ws"]
+
+[[chain]]
+name = "astar"
+native-token = "ASTR"
+decimals = 18
+endpoints = ["wss://astar-rpc.dwellir.com"]
+
+[[chain]]
+name = "bifrost"
+native-token = "BNC"
+decimals = 12
+endpoints = ["wss://bifrost-polkadot-rpc.dwellir.com"]
+
+[[chain]]
+name = "centrifuge"
+native-token = "CFG"
+decimals = 18
+endpoints = ["wss://centrifuge-rpc.dwellir.com"]
+
+[[chain]]
+name = "composable"
+native-token = "LAYR"
+decimals = 12
+endpoints = ["wss://composable-rpc.dwellir.com"]
+
+[[chain]]
+name = "continuum"
+native-token = "NUUM"
+decimals = 18
+endpoints = ["wss://continuum-rpc-1.metaverse.network/wss"]
+
+[[chain]]
+name = "crust-parachain"
+native-token = "CRU"
+decimals = 12
+endpoints = ["wss://crust-parachain.crustapps.net"]
+
+[[chain]]
+name = "darwinia"
+native-token = "RING"
+decimals = 18
+endpoints = ["wss://darwinia-rpc.dwellir.com"]
+
+[[chain]]
+name = "hydradx"
+native-token = "HDX"
+decimals = 12
+endpoints = ["wss://hydradx-rpc.dwellir.com"]
+
+[[chain]]
+name = "spiritnet"
+native-token = "KILT"
+decimals = 15
+endpoints = ["wss://kilt-rpc.dwellir.com"]
+
+[[chain]]
+name = "manta"
+native-token = "MANTA"
+decimals = 18
+endpoints = ["wss://ws.manta.systems"]
+
+[[chain]]
+name = "moonbeam"
+native-token = "GLMR"
+decimals = 18
+endpoints = ["wss://moonbeam-rpc.dwellir.com"]
+
+[[chain]]
+name = "neuroweb"
+native-token = "NEURO"
+decimals = 12
+endpoints = [
+    "wss://neuroweb-rpc.dwellir.com",
+    "parachain-rpc.origin-trail.network",
+]
+
+[[chain]]
+name = "nodle"
+native-token = "NODL"
+decimals = 11
+endpoints = ["wss://nodle-parachain.api.onfinality.io/public-ws"]
+
+[[chain]]
+name = "phala"
+native-token = "PHA"
+decimals = 12
+endpoints = ["wss://phala-rpc.dwellir.com"]
+
+[[chain]]
+name = "polkadex-parachain"
+native-token = "PDEX"
+decimals = 12
+endpoints = ["wss://polkadex-parachain-rpc.dwellir.com"]
+
+[[chain]]
+name = "unique"
+native-token = "UNQ"
+decimals = 18
+endpoints = ["wss://unique-rpc.dwellir.com"]
+
+[[chain]]
+name = "zeitgeist"
+native-token = "ZTG"
+decimals = 10
+endpoints = ["wss://zeitgeist.api.onfinality.io/public-ws"]
+
+[[chain]]
+name = "kusama"
+native-token = "KSM"
+decimals = 12
+endpoints = ["wss://kusama-rpc.polkadot.io", "wss://1rpc.io/ksm"]
+
+[[chain]]
+name = "westend"
+native-token = "WND"
+decimals = 12
+endpoints = ["wss://westend-rpc.polkadot.io", "wss://westend-rpc.dwellir.com"]
+
+[[chain]]
+name = "westmint"
+native-token = "WND AH"
+decimals = 12
+endpoints = [
+    "wss://westend-asset-hub-rpc.polkadot.io",
+    "wss://westmint-rpc.dwellir.com",
+]
+
+[[chain.asset]]
+name = "JOE"
+id = 8
+
+[[chain.asset]]
+name = "TEST"
+id = 1234
+
+[[chain]]
+name = "rococo"
+native-token = "ROC"
+decimals = 12
+endpoints = ["wss://rococo-rpc.polkadot.io"]
+
+[[chain]]
+name = "assethub-rococo"
+native-token = "ROC AH"
+decimals = 12
+endpoints = [
+    "wss://rococo-asset-hub-rpc.polkadot.io",
+    "wss://rococo-asset-hub-rpc.dwellir.com",
+]
+
+[[chain.asset]]
+name = "RUSDT"
+id = 1984
+
+[[chain.asset]]
+name = "TUSDT"
+id = 7777

@@ -1,6 +1,5 @@
-account-lifetime = 604800000 # 1 week.
-debug = true
-depth = 86400000 # 1 day.
+account-lifetime = 86400000 # 1 day.
+restart-gap = 3600000       # 1 hour.
 
 [[chain]]
 name = "polkadot"
@@ -14,7 +13,7 @@ endpoints = [
 [[chain]]
 name = "statemint"
 endpoints = [
-    "wss://polkadot-asset-hub-rpc.polkadot.io",
+    # "wss://polkadot-asset-hub-rpc.polkadot.io",
     "wss://statemint-rpc.dwellir.com",
 ]
 

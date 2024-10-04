@@ -1,725 +1,738 @@
-//! Database server module
+//! The database module.
 //!
-//! We do not need concurrency here, as this is our actual source of truth for legally binging
-//! commercial offers and contracts, hence causality is a must. Care must be taken that no threads
-//! are spawned here other than main database server thread that does everything in series.
+//! We do not need concurrency here as this is our actual source of truth for legally binging
+//! commercial offers and contracts, hence causality is a must. A care must be taken that no threads
+//! are spawned here and all locking methods are called in sync functions without sharing lock
+//! guards with the async code.
 
 use crate::{
-    definitions::{
-        api_v2::{
-            CurrencyInfo, OrderCreateResponse, OrderInfo, OrderQuery, PaymentStatus, Timestamp,
-            WithdrawalStatus,
-        },
-        Version,
-    },
-    error::{DbError, Error},
-    task_tracker::TaskTracker,
+    arguments::{ChainName, OLD_SEED},
+    chain_wip::definitions::{ConnectedChain, PreparedChain, H256, H64},
+    error::{DbError, OrderError},
+    signer::{KeyStore, Signer},
+    utils::PathDisplay,
 };
-use parity_scale_codec::{Decode, Encode};
-use std::time::SystemTime;
-use substrate_crypto_light::common::AccountId32;
-use tokio::sync::{mpsc, oneshot};
+use ahash::{HashMap, HashMapExt, HashSet, HashSetExt, RandomState};
+use arguments::InsertOrder;
+use codec::{DecodeAll, Encode};
+use indexmap::{map::Entry, IndexMap};
+use names::{Generator, Name};
+use redb::{
+    backends::{FileBackend, InMemoryBackend},
+    AccessGuard, Database as Redb, ReadOnlyTable, ReadTransaction, ReadableTable, Table,
+    TableHandle, Value, WriteTransaction,
+};
+use std::{
+    array, borrow::Cow, ffi::OsStr, fs::File, io::ErrorKind, num::NonZeroU64 as StdNonZeroU64,
+    sync::Arc,
+};
+
+pub mod definitions;
+
+use definitions::{
+    ChainHash, ChainName as DbChainName, ChainProperties, DaemonInfo, KeysTable, NonZeroU64,
+    OrderId, OrderInfo, OrdersPerChainTable, OrdersTable, PaymentStatus, Public, RootKey,
+    RootTable, RootValue, TableRead, TableTrait, TableTypes, TableWrite, Timestamp, Version,
+};
 
 pub const MODULE: &str = module_path!();
+pub const DB_VERSION: Version = Version(0);
 
-const DB_VERSION: Version = 0;
-
-// Tables
-/*
-const ROOT: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("root");
-const KEYS: TableDefinition<'_, PublicSlot, U256Slot> = TableDefinition::new("keys");
-const CHAINS: TableDefinition<'_, ChainHash, BlockNumber> = TableDefinition::new("chains");
-const INVOICES: TableDefinition<'_, InvoiceKey, Invoice> = TableDefinition::new("invoices");
-*/
-const ACCOUNTS: &str = "accounts";
-
-//type ACCOUNTS_KEY = (Option<AssetId>, Account);
-//type ACCOUNTS_VALUE = InvoiceKey;
-
-const TRANSACTIONS: &str = "transactions";
-
-//type TRANSACTIONS_KEY = BlockNumber;
-//type TRANSACTIONS_VALUE = (Account, Nonce, Transfer);
-
-const HIT_LIST: &str = "hit_list";
-
-//type HIT_LIST_KEY = BlockNumber;
-//type HIT_LIST_VALUE = (Option<AssetId>, Account);
-
-// `ROOT` keys
-
-// The database version must be stored in a separate slot to be used by the not implemented yet
-// database migration logic.
-const DB_VERSION_KEY: &str = "db_version";
-const DAEMON_INFO: &str = "daemon_info";
-
-const ORDERS: &[u8] = b"orders";
-
-// Slots
-
-type InvoiceKey = &'static [u8];
-type U256Slot = [u64; 4];
-type BlockHash = [u8; 32];
-type ChainHash = [u8; 32];
-type PublicSlot = [u8; 32];
-type BalanceSlot = u128;
-type Derivation = [u8; 32];
-pub type Account = [u8; 32];
-/*
-#[derive(Encode, Decode)]
-enum ChainKind {
-    Id(Vec<Compact<AssetId>>),
-    MultiLocation(Vec<Compact<AssetId>>),
-}
-
-#[derive(Encode, Decode)]
-struct DaemonInfo {
-    chains: Vec<(String, ChainProperties)>,
-    current_key: PublicSlot,
-    old_keys_death_timestamps: Vec<(PublicSlot, Timestamp)>,
-}
-
-#[derive(Encode, Decode)]
-struct ChainProperties {
-    genesis: BlockHash,
-    hash: ChainHash,
-    kind: ChainKind,
-}
-
-#[derive(Encode, Decode)]
-struct Transfer(Option<Compact<AssetId>>, #[codec(compact)] BalanceSlot);
-
-#[derive(Encode, Decode, Debug)]
-struct Invoice {
-    derivation: (PublicSlot, Derivation),
-    paid: bool,
-    #[codec(compact)]
-    timestamp: Timestamp,
-    #[codec(compact)]
-    price: BalanceSlot,
-    callback: String,
-    message: String,
-    transactions: TransferTxs,
-}
-
-#[derive(Encode, Decode, Debug)]
-enum TransferTxs {
-    Asset {
-        #[codec(compact)]
-        id: AssetId,
-        // transactions: TransferTxsAsset,
-    },
-    Native {
-        recipient: Account,
-        encoded: Vec<u8>,
-        exact_amount: Option<Compact<BalanceSlot>>,
-    },
-}
-
-// #[derive(Encode, Decode, Debug)]
-// struct TransferTxsAsset<T> {
-//     recipient: Account,
-//     encoded: Vec<u8>,
-//     #[codec(compact)]
-//     amount: BalanceSlot,
-// }
-
-#[derive(Encode, Decode, Debug)]
-struct TransferTx {
-    recipient: Account,
-    exact_amount: Option<Compact<BalanceSlot>>,
-}
-*/
-/*
-impl Value for Invoice {
-    type SelfType<'a> = Self;
-
-    type AsBytes<'a> = Vec<u8>;
-
-    fn fixed_width() -> Option<usize> {
-        None
-    }
-
-    fn from_bytes<'a>(mut data: &[u8]) -> Self::SelfType<'_>
-    where
-        Self: 'a,
-    {
-        Self::decode(&mut data).unwrap()
-    }
-
-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'a>) -> Self::AsBytes<'_> {
-        value.encode()
-    }
-
-    fn type_name() -> TypeName {
-        TypeName::new(stringify!(Invoice))
-    }
-}*/
-
-pub struct ConfigWoChains {
-    pub recipient: AccountId32,
-    pub debug: Option<bool>,
-    pub remark: Option<String>,
-    //pub depth: Option<Duration>,
-}
-
-/// Database server handle
-#[derive(Clone, Debug)]
 pub struct Database {
-    tx: mpsc::Sender<DbRequest>,
+    db: Redb,
+    instance: String,
 }
 
 impl Database {
-    pub fn init(
-        path_option: Option<String>,
-        task_tracker: TaskTracker,
-        account_lifetime: Timestamp,
-    ) -> Result<Self, Error> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-        let database = if let Some(path) = path_option {
-            tracing::info!("Creating/Opening the database at {path:?}.");
+    #[expect(clippy::too_many_lines, clippy::type_complexity)]
+    pub fn new(
+        path_option: Option<Cow<'static, OsStr>>,
+        mut connected_chains: IndexMap<ChainName, ConnectedChain, RandomState>,
+        key_store: KeyStore,
+    ) -> Result<
+        (
+            Arc<Self>,
+            Arc<Signer>,
+            IndexMap<ChainName, PreparedChain, RandomState>,
+        ),
+        DbError,
+    > {
+        let builder = Redb::builder();
 
-            sled::open(path).map_err(DbError::DbStartError)?
+        let (mut database, is_new) = if let Some(path) = path_option {
+            match File::create_new(&path) {
+                Ok(file) => {
+                    tracing::info!("Creating the database at {}.", PathDisplay(path));
+
+                    FileBackend::new(file)
+                        .and_then(|backend| builder.create_with_backend(backend))
+                        .map(|db| (db, true))
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    tracing::info!("Opening the database at {}.", PathDisplay(&path));
+
+                    builder.open(path).map(|db| (db, false))
+                }
+                Err(error) => Err(error.into()),
+            }
         } else {
-            // TODO
-            /*
             tracing::warn!(
                 "The in-memory backend for the database is selected. All saved data will be deleted after the shutdown!"
-            );*/
-            sled::open("temp.db").map_err(DbError::DbStartError)?
+            );
+
+            builder
+                .create_with_backend(InMemoryBackend::new())
+                .map(|db| (db, true))
+        }?;
+
+        let tx = TxWrite::new(&database)?.0;
+        let mut root = RootTable::open(&tx)?;
+        let mut chain_hashes = HashSet::with_capacity(connected_chains.len());
+        let public = key_store.public();
+        let mut prepared_chains =
+            IndexMap::with_capacity_and_hasher(connected_chains.len(), RandomState::new());
+
+        let daemon_info;
+        let signer;
+        let instance = if is_new {
+            signer = key_store.into_signer::<true>(HashMap::new());
+
+            let mut new_db_chains = Vec::with_capacity(connected_chains.len());
+
+            for (name, connected_chain) in connected_chains {
+                process_new_chain(
+                    &mut chain_hashes,
+                    name,
+                    &mut new_db_chains,
+                    connected_chain,
+                    &mut prepared_chains,
+                );
+            }
+
+            let instance = Generator::with_naming(Name::Numbered).next().unwrap();
+
+            daemon_info = DaemonInfo {
+                chains: new_db_chains,
+                public,
+                old_publics_death_timestamps: vec![],
+                instance: instance.clone(),
+            };
+
+            root.insert_slot(
+                RootKey::DbVersion,
+                RootValue(&Version::as_bytes(&DB_VERSION)),
+            )?;
+
+            instance
+        } else {
+            let Some(encoded_db_version) = root.get_slot(RootKey::DbVersion)? else {
+                return Err(DbError::NoVersion);
+            };
+
+            let db_version = Version::from_bytes(encoded_db_version.value().0);
+
+            if db_version != DB_VERSION {
+                return Err(DbError::UnexpectedVersion(db_version));
+            }
+
+            let Some(encoded_daemon_info) = root.get_slot(RootKey::DaemonInfo)? else {
+                return Err(DbError::NoDaemonInfo);
+            };
+
+            let DaemonInfo {
+                chains: db_chains,
+                public: db_public,
+                old_publics_death_timestamps,
+                instance,
+            } = DaemonInfo::decode_all(&mut encoded_daemon_info.value().0)?;
+
+            #[expect(clippy::arithmetic_side_effects)]
+            let mut new_db_chains = IndexMap::with_capacity_and_hasher(
+                db_chains.len() + connected_chains.len(),
+                RandomState::new(),
+            );
+            let mut orders_per_chain = OrdersPerChainTable::open(&tx)?;
+
+            for (name, properties) in db_chains {
+                process_db_chain(
+                    name,
+                    properties,
+                    &mut chain_hashes,
+                    &mut new_db_chains,
+                    &mut connected_chains,
+                    &mut orders_per_chain,
+                    &mut prepared_chains,
+                )?;
+            }
+
+            for (name, connected_chain) in connected_chains {
+                process_new_chain(
+                    &mut chain_hashes,
+                    name,
+                    &mut new_db_chains,
+                    connected_chain,
+                    &mut prepared_chains,
+                );
+            }
+
+            let tables = Tables::get(&tx, &chain_hashes)?;
+            let (new_old_publics_death_timestamps, prepared_signer) = process_keys(
+                &public,
+                db_public,
+                key_store,
+                old_publics_death_timestamps,
+                tables.keys,
+            )?;
+
+            signer = prepared_signer;
+
+            let mut new_db_chains_vec = Vec::with_capacity(new_db_chains.len());
+
+            new_db_chains_vec.extend(new_db_chains);
+
+            daemon_info = DaemonInfo {
+                chains: new_db_chains_vec,
+                public,
+                old_publics_death_timestamps: new_old_publics_death_timestamps,
+                instance: instance.clone(),
+            };
+
+            instance
         };
-        let orders = database.open_tree(ORDERS).map_err(DbError::DbStartError)?;
 
-        task_tracker.spawn("Database server", async move {
-            // No process forking beyond this point!
-            while let Some(request) = rx.recv().await {
-                match request {
-                    DbRequest::ActiveOrderList(res) => {
-                        let _unused = res.send(Ok(orders
-                            .iter()
-                            .filter_map(|a| a.ok())
-                            .filter_map(|(a, b)| {
-                                match (String::decode(&mut &a[..]), OrderInfo::decode(&mut &b[..]))
-                                {
-                                    (Ok(a), Ok(b)) => Some((a, b)),
-                                    _ => None,
-                                }
-                            })
-                            .filter(|(a, b)| b.payment_status == PaymentStatus::Pending)
-                            .collect()));
-                    }
-                    DbRequest::CreateOrder(request) => {
-                        let _unused = request.res.send(create_order(
-                            request.order,
-                            request.query,
-                            request.currency,
-                            request.payment_account,
-                            &orders,
-                            account_lifetime,
-                        ));
-                    }
-                    DbRequest::ReadOrder(request) => {
-                        let _unused = request.res.send(read_order(request.order, &orders));
-                    }
-                    DbRequest::MarkPaid(request) => {
-                        let _unused = request.res.send(mark_paid(request.order, &orders));
-                    }
-                    DbRequest::MarkWithdrawn(request) => {
-                        let _unused = request.res.send(mark_withdrawn(request.order, &orders));
-                    }
-                    DbRequest::MarkStuck(request) => {
-                        let _unused = request.res.send(mark_stuck(request.order, &orders));
-                    }
-                    DbRequest::Shutdown(res) => {
-                        let _ = res.send(());
-                        break;
-                    }
-                };
-            }
+        root.insert_slot(&RootKey::DaemonInfo, &RootValue(&daemon_info.encode()))?;
 
-            drop(database.flush());
+        drop(root);
 
-            Ok("Database server is shutting down".into())
-        });
+        tx.commit()?;
 
-        Ok(Self { tx })
-    }
-
-    pub async fn order_list(&self) -> Result<Vec<(String, OrderInfo)>, DbError> {
-        let (res, rx) = oneshot::channel();
-        let _unused = self.tx.send(DbRequest::ActiveOrderList(res)).await;
-        rx.await.map_err(|_| DbError::DbEngineDown)?
-    }
-
-    pub async fn create_order(
-        &self,
-        order: String,
-        query: OrderQuery,
-        currency: CurrencyInfo,
-        payment_account: String,
-    ) -> Result<OrderCreateResponse, DbError> {
-        let (res, rx) = oneshot::channel();
-        let _unused = self
-            .tx
-            .send(DbRequest::CreateOrder(CreateOrder {
-                order,
-                query,
-                currency,
-                payment_account,
-                res,
-            }))
-            .await;
-        rx.await.map_err(|_| DbError::DbEngineDown)?
-    }
-
-    pub async fn read_order(&self, order: String) -> Result<Option<OrderInfo>, DbError> {
-        let (res, rx) = oneshot::channel();
-        let _unused = self
-            .tx
-            .send(DbRequest::ReadOrder(ReadOrder { order, res }))
-            .await;
-        rx.await.map_err(|_| DbError::DbEngineDown)?
-    }
-
-    pub async fn mark_paid(&self, order: String) -> Result<OrderInfo, DbError> {
-        let (res, rx) = oneshot::channel();
-        let _unused = self
-            .tx
-            .send(DbRequest::MarkPaid(MarkPaid { order, res }))
-            .await;
-        rx.await.map_err(|_| DbError::DbEngineDown)?
-    }
-
-    pub async fn mark_withdrawn(&self, order: String) -> Result<(), DbError> {
-        let (res, rx) = oneshot::channel();
-        let _unused = self
-            .tx
-            .send(DbRequest::MarkWithdrawn(ModifyOrder { order, res }))
-            .await;
-        rx.await.map_err(|_| DbError::DbEngineDown)?
-    }
-
-    pub async fn mark_stuck(&self, order: String) -> Result<(), DbError> {
-        let (res, rx) = oneshot::channel();
-        let _unused = self
-            .tx
-            .send(DbRequest::MarkStuck(ModifyOrder { order, res }))
-            .await;
-        rx.await.map_err(|_| DbError::DbEngineDown)?
-    }
-
-    pub async fn shutdown(&self) {
-        let (tx, rx) = oneshot::channel();
-        let _unused = self.tx.send(DbRequest::Shutdown(tx)).await;
-        let _ = rx.await;
-    }
-}
-
-enum DbRequest {
-    CreateOrder(CreateOrder),
-    ActiveOrderList(oneshot::Sender<Result<Vec<(String, OrderInfo)>, DbError>>),
-    ReadOrder(ReadOrder),
-    MarkPaid(MarkPaid),
-    MarkWithdrawn(ModifyOrder),
-    MarkStuck(ModifyOrder),
-    Shutdown(oneshot::Sender<()>),
-}
-
-pub struct CreateOrder {
-    pub order: String,
-    pub query: OrderQuery,
-    pub currency: CurrencyInfo,
-    pub payment_account: String,
-    pub res: oneshot::Sender<Result<OrderCreateResponse, DbError>>,
-}
-
-pub struct ReadOrder {
-    pub order: String,
-    pub res: oneshot::Sender<Result<Option<OrderInfo>, DbError>>,
-}
-
-pub struct ModifyOrder {
-    pub order: String,
-    pub res: oneshot::Sender<Result<(), DbError>>,
-}
-
-pub struct MarkPaid {
-    pub order: String,
-    pub res: oneshot::Sender<Result<OrderInfo, DbError>>,
-}
-
-fn calculate_death_ts(account_lifetime: Timestamp) -> Timestamp {
-    let start = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-
-    Timestamp(start + account_lifetime.0)
-}
-
-fn create_order(
-    order: String,
-    query: OrderQuery,
-    currency: CurrencyInfo,
-    payment_account: String,
-    orders: &sled::Tree,
-    account_lifetime: Timestamp,
-) -> Result<OrderCreateResponse, DbError> {
-    Ok(if let Some(record) = orders.get(&order)? {
-        let mut old_order_info = OrderInfo::decode(&mut &record[..])?;
-        match old_order_info.payment_status {
-            PaymentStatus::Pending => {
-                let death = calculate_death_ts(account_lifetime);
-
-                old_order_info.death = death;
-
-                drop(orders.insert(order.encode(), old_order_info.encode())?);
-                OrderCreateResponse::Modified(old_order_info)
-            }
-            PaymentStatus::Paid => OrderCreateResponse::Collision(old_order_info),
+        if database.compact()? {
+            tracing::debug!("The database has been compacted.");
+        } else {
+            tracing::debug!("The database doesn't need to be compacted.");
         }
-    } else {
-        let death = calculate_death_ts(account_lifetime);
-        let order_info_new = OrderInfo::new(query, currency, payment_account, death);
 
-        orders.insert(order.encode(), order_info_new.encode())?;
-        OrderCreateResponse::New(order_info_new)
+        Ok((
+            Arc::new(Self {
+                db: database,
+                instance,
+            }),
+            Arc::new(signer),
+            prepared_chains,
+        ))
+    }
+
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+
+    pub fn read(&self) -> Result<TxRead, DbError> {
+        self.db.begin_read().map_err(DbError::TxRead).map(TxRead)
+    }
+
+    pub fn write<T>(&self, f: impl FnOnce(&TxWrite) -> Result<T, DbError>) -> Result<T, DbError> {
+        let tx = TxWrite::new(&self.db)?;
+
+        let t = f(&tx)?;
+
+        tx.0.commit()?;
+
+        Ok(t)
+    }
+}
+
+pub struct TxRead(ReadTransaction);
+
+impl TxRead {
+    pub fn orders(&self) -> Result<Option<OrdersRead>, DbError> {
+        OrdersTable::open_ro(&self.0).map(|some| some.map(OrdersRead))
+    }
+}
+
+pub struct OrdersRead(
+    ReadOnlyTable<<OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>,
+);
+
+pub trait OrdersReadable {
+    fn table(
+        &self,
+    ) -> &impl ReadableTable<<OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>;
+
+    fn read(
+        &self,
+        key: impl AsRef<str>,
+    ) -> Result<Option<<OrdersTable as TableTypes>::Value>, DbError> {
+        self.table()
+            .get_slot(OrderId(key.as_ref()))
+            .map(|some| some.map(|ag| ag.value()))
+    }
+
+    fn active(
+        &self,
+    ) -> Result<
+        impl Iterator<
+            Item = Result<
+                (
+                    AccessGuard<'_, <OrdersTable as TableTypes>::Key>,
+                    <OrdersTable as TableTypes>::Value,
+                ),
+                DbError,
+            >,
+        >,
+        DbError,
+    > {
+        self.table().iter().map_err(DbError::Range).map(|range| {
+            range.filter_map(|result| {
+                result
+                    .map(|(k, v)| {
+                        let order = v.value();
+
+                        (order.payment_status == PaymentStatus::Pending).then_some((k, order))
+                    })
+                    .map_err(DbError::RangeIter)
+                    .transpose()
+            })
+        })
+    }
+}
+
+impl OrdersReadable for OrdersRead {
+    fn table(
+        &self,
+    ) -> &impl ReadableTable<<OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>
+    {
+        &self.0
+    }
+}
+
+impl OrdersReadable for OrdersWrite<'_> {
+    fn table(
+        &self,
+    ) -> &impl ReadableTable<<OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>
+    {
+        &self.0
+    }
+}
+
+pub struct TxWrite(WriteTransaction);
+
+impl TxWrite {
+    fn new(db: &Redb) -> Result<Self, DbError> {
+        db.begin_write().map(TxWrite).map_err(DbError::TxWrite)
+    }
+
+    pub fn orders(&self) -> Result<OrdersWrite<'_>, DbError> {
+        OrdersTable::open(&self.0).map(OrdersWrite)
+    }
+
+    pub fn orders_per_chain(&self) -> Result<OrdersPerChainWrite<'_>, DbError> {
+        OrdersPerChainTable::open(&self.0).map(OrdersPerChainWrite)
+    }
+
+    pub fn keys(&self) -> Result<KeysWrite<'_>, DbError> {
+        KeysTable::open(&self.0).map(KeysWrite)
+    }
+
+    pub fn insert_order(
+        mut orders: OrdersWrite<'_>,
+        mut orders_per_chain: OrdersPerChainWrite<'_>,
+        mut keys: KeysWrite<'_>,
+        InsertOrder {
+            chain,
+            key,
+            public,
+            callback,
+            currency,
+            amount,
+            account_lifetime,
+            payment_account,
+        }: InsertOrder<impl AsRef<str>>,
+    ) -> Result<OrderInfo, DbError> {
+        let key_as_ref = key.as_ref();
+        let order_option = orders.read(key_as_ref)?;
+
+        if let Some(order) = order_option {
+            order.update(callback, chain, currency, amount, account_lifetime)
+        } else {
+            let increment = |option_ag: Option<AccessGuard<'_, NonZeroU64>>| {
+                NonZeroU64(option_ag.map_or(StdNonZeroU64::MIN, |ag| {
+                    ag.value()
+                        .0
+                        .checked_add(1)
+                        .expect("database can't store more than `u64::MAX` orders")
+                }))
+            };
+            let new = OrderInfo::new(
+                amount,
+                callback,
+                payment_account,
+                currency,
+                account_lifetime,
+                chain,
+            )?;
+
+            orders.0.insert_slot(OrderId(key_as_ref), &new)?;
+
+            let mut n = increment(orders_per_chain.0.get_slot(chain)?);
+
+            orders_per_chain.0.insert_slot(chain, n)?;
+
+            n = increment(keys.0.get_slot(public)?);
+
+            keys.0.insert_slot(public, n)?;
+
+            Ok(new)
+        }
+    }
+}
+
+pub struct OrdersWrite<'a>(
+    Table<'a, <OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>,
+);
+
+impl OrdersWrite<'_> {
+    pub fn mark_paid(
+        &mut self,
+        key: impl AsRef<str>,
+    ) -> Result<<OrdersTable as TableTypes>::Value, DbError> {
+        let key_as_ref = key.as_ref();
+
+        let Some(mut order) = self.read(key_as_ref)? else {
+            return Err(OrderError::NotFound.into());
+        };
+
+        if order.payment_status != PaymentStatus::Pending {
+            return Err(OrderError::Paid.into());
+        }
+
+        order.payment_status = PaymentStatus::Paid;
+
+        self.0.insert_slot(OrderId(key_as_ref), &order)?;
+
+        Ok(order)
+    }
+}
+
+pub struct OrdersPerChainWrite<'a>(
+    Table<'a, <OrdersPerChainTable as TableTypes>::Key, <OrdersPerChainTable as TableTypes>::Value>,
+);
+
+pub struct KeysWrite<'a>(
+    Table<'a, <KeysTable as TableTypes>::Key, <KeysTable as TableTypes>::Value>,
+);
+
+struct Tables<'a> {
+    keys: Option<Table<'a, <KeysTable as TableTypes>::Key, <KeysTable as TableTypes>::Value>>,
+    orders: Option<Table<'a, <OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>>,
+}
+
+impl<'a> Tables<'a> {
+    /// Collects all tables in the database & purges unknown ones (e.g. those left after a
+    /// migration).
+    fn get(
+        tx: &'a WriteTransaction,
+        chain_hashes: &HashSet<ChainHash>,
+    ) -> Result<Tables<'a>, DbError> {
+        let mut keys = None;
+        let mut orders = None;
+
+        for table in tx.list_tables().map_err(DbError::TableList)? {
+            match table.name() {
+                // These tables were opened before a calling of `Tables::get()`.
+                RootTable::NAME | OrdersPerChainTable::NAME => {}
+                KeysTable::NAME => keys = Some(KeysTable::open(tx)?),
+                OrdersTable::NAME => orders = Some(OrdersTable::open(tx)?),
+                other_name => {
+                    if open_chain_tables(tx, chain_hashes, other_name)? {
+                        tracing::debug!(
+                            "Detected an unknown table {other_name:?}, it'll be purged."
+                        );
+
+                        tx.delete_table(table).map_err(DbError::DeleteTable)?;
+                    }
+                }
+            }
+        }
+
+        Ok(Self { keys, orders })
+    }
+}
+
+#[expect(clippy::unnecessary_wraps, unused)]
+fn open_chain_tables(
+    tx: &WriteTransaction,
+    chain_hashes: &HashSet<ChainHash>,
+    other_name: &str,
+) -> Result<bool, DbError> {
+    let Some(hash_start) = other_name.len().checked_sub(H64::HEX_LENGTH) else {
+        return Ok(true);
+    };
+
+    let Some((stripped, maybe_hash)) = other_name.split_at_checked(hash_start) else {
+        return Ok(true);
+    };
+
+    #[expect(clippy::match_single_binding)]
+    match stripped {
+        // TODO: Arms with chain tables.
+        _ => Ok(true),
+    }
+}
+
+trait NewDbChains {
+    fn add(self, name: DbChainName, properties: ChainProperties);
+}
+
+impl NewDbChains for &mut IndexMap<DbChainName, ChainProperties, RandomState> {
+    fn add(self, name: DbChainName, properties: ChainProperties) {
+        self.insert(name, properties);
+    }
+}
+
+impl NewDbChains for &mut Vec<(DbChainName, ChainProperties)> {
+    fn add(self, name: DbChainName, properties: ChainProperties) {
+        self.push((name, properties));
+    }
+}
+
+fn strip_array<T, const N1: usize, const N2: usize>(array: [T; N1]) -> [T; N2] {
+    let mut iterator = array.into_iter();
+
+    array::from_fn(|_| {
+        iterator.next().expect(
+            "number of elements in the returned array should be equal or less than in the \
+            given array",
+        )
     })
 }
 
-fn read_order(order: String, orders: &sled::Tree) -> Result<Option<OrderInfo>, DbError> {
-    if let Some(order) = orders.get(order)? {
-        Ok(Some(OrderInfo::decode(&mut &order[..])?))
-    } else {
-        Ok(None)
-    }
-}
+fn process_new_chain(
+    chain_hashes: &mut HashSet<ChainHash>,
+    name: ChainName,
+    new_db_chains: impl NewDbChains,
+    chain: ConnectedChain,
+    prepared_chains: &mut IndexMap<ChainName, PreparedChain, RandomState>,
+) {
+    let mut chain_hash = ChainHash(strip_array(chain.genesis.0.to_be_bytes()));
+    let mut step = 1;
 
-fn mark_paid(order: String, orders: &sled::Tree) -> Result<OrderInfo, DbError> {
-    if let Some(order_info) = orders.get(order.clone())? {
-        let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
-        if order_info.payment_status == PaymentStatus::Pending {
-            order_info.payment_status = PaymentStatus::Paid;
-            orders.insert(order.encode(), order_info.encode())?;
-            Ok(order_info)
-        } else {
-            Err(DbError::AlreadyPaid(order))
-        }
-    } else {
-        Err(DbError::OrderNotFound(order))
-    }
-}
-fn mark_withdrawn(order: String, orders: &sled::Tree) -> Result<(), DbError> {
-    if let Some(order_info) = orders.get(order.clone())? {
-        let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
-        if order_info.payment_status == PaymentStatus::Paid {
-            if order_info.withdrawal_status == WithdrawalStatus::Waiting {
-                order_info.withdrawal_status = WithdrawalStatus::Completed;
-                orders.insert(order.encode(), order_info.encode())?;
-                Ok(())
-            } else {
-                Err(DbError::WithdrawalWasAttempted(order))
-            }
-        } else {
-            Err(DbError::NotPaid(order))
-        }
-    } else {
-        Err(DbError::OrderNotFound(order))
-    }
-}
-fn mark_stuck(order: String, orders: &sled::Tree) -> Result<(), DbError> {
-    if let Some(order_info) = orders.get(order.clone())? {
-        let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
-        if order_info.payment_status == PaymentStatus::Paid {
-            if order_info.withdrawal_status == WithdrawalStatus::Waiting {
-                order_info.withdrawal_status = WithdrawalStatus::Failed;
-                orders.insert(order.encode(), order_info.encode())?;
-                Ok(())
-            } else {
-                Err(DbError::WithdrawalWasAttempted(order))
-            }
-        } else {
-            Err(DbError::NotPaid(order))
-        }
-    } else {
-        Err(DbError::OrderNotFound(order))
-    }
-}
-//impl StateInterface {
-/*
-    Ok((
-        OrderStatus {
-            order,
-            payment_status: if invoice.paid {
-                PaymentStatus::Paid
-            } else {
-                PaymentStatus::Pending
-            },
-            message: String::new(),
-            recipient: state.0.recipient.to_ss58check(),
-            server_info: state.server_info(),
-            order_info: OrderInfo {
-                withdrawal_status: WithdrawalStatus::Waiting,
-                amount: invoice.amount.format(6),
-                currency: CurrencyInfo {
-                    currency: "USDC".into(),
-                    chain_name: "assethub-polkadot".into(),
-                    kind: TokenKind::Asset,
-                    decimals: 6,
-                    rpc_url: state.rpc.clone(),
-                    asset_id: Some(1337),
+    loop {
+        if chain_hashes.insert(chain_hash) {
+            tracing::debug!(
+                "The new {name:?} chain is assigned to the {:#} hash.",
+                H64::from(chain_hash)
+            );
+
+            new_db_chains.add(
+                (&name).into(),
+                ChainProperties {
+                    genesis: chain.genesis.into(),
+                    hash: chain_hash,
                 },
-                callback: invoice.callback.clone(),
-                transactions: vec![],
-                payment_account: invoice.paym_acc.to_ss58check(),
-            },
-        },
-        OrderSuccess::Found,
-    ))
-} else {
-    Ok((
-        OrderStatus {
-            order,
-            payment_status: PaymentStatus::Unknown,
-message: String::new(),
-            recipient: state.0.recipient.to_ss58check(),
-            server_info: state.server_info(),
-            order_info: OrderInfo {
-                withdrawal_status: WithdrawalStatus::Waiting,
-                amount: 0f64,
-                currency: CurrencyInfo {
-                    currency: "USDC".into(),
-                    chain_name: "assethub-polkadot".into(),
-                    kind: TokenKind::Asset,
-                    decimals: 6,
-                    rpc_url: state.rpc.clone(),
-                    asset_id: Some(1337),
+            );
+            prepared_chains.insert(
+                name,
+                PreparedChain {
+                    hash: chain_hash,
+                    connected: chain,
                 },
-                callback: String::new(),
-                transactions: vec![],
-                payment_account: String::new(),
-            },
-        },
-        OrderSuccess::Found,
-    ))
-}*/
+            );
 
-/*
- *
-let pay_acc: AccountId = state
-        .0
-        .pair
-        .derive(vec![DeriveJunction::hard(order.clone())].into_iter(), None)
-        .unwrap()
-        .0
-        .public()
-        .into();
-
- * */
-
-/*(
-    OrderStatus {
-        order,
-        payment_status: PaymentStatus::Pending,
-        message: String::new(),
-        recipient: state.0.recipient.to_ss58check(),
-        server_info: state.server_info(),
-        order_info: OrderInfo {
-            withdrawal_status: WithdrawalStatus::Waiting,
-            amount,
-            currency: CurrencyInfo {
-                currency: "USDC".into(),
-                chain_name: "assethub-polkadot".into(),
-                kind: TokenKind::Asset,
-                decimals: 6,
-                rpc_url: state.rpc.clone(),
-                asset_id: Some(1337),
-            },
-            callback,
-            transactions: vec![],
-            payment_account: pay_acc.to_ss58check(),
-        },
-    },
-    OrderSuccess::Created,
-))*/
-
-/*
-        ServerStatus {
-            description: state.server_info(),
-            supported_currencies: state.currencies.clone(),
+            break;
         }
-*/
-/*
-#[derive(Deserialize, Debug)]
-pub struct Invoicee {
-    pub callback: String,
-    pub amount: Balance,
-    pub paid: bool,
-    pub paym_acc: Account,
-}
-*/
-/*
 
-*/
-/*
-        pub fn server_info(&self) -> ServerInfo {
-            ServerInfo {
-                version: env!("CARGO_PKG_VERSION"),
-                instance_id: String::new(),
-                debug: self.debug,
-                kalatori_remark: self.remark.clone(),
+        tracing::debug!(
+            "Failed to assign the new {name:?} chain to the {:#} hash. Probing the next slot...",
+            H64::from(chain_hash)
+        );
+
+        chain_hash = H64(H64::from_be_bytes(chain_hash.0).0.overflowing_add(step).0).into();
+        step = step
+            .checked_add(1)
+            .expect("database can't store more than `u64::MAX` chains");
+    }
+}
+
+fn process_db_chain(
+    db_name: DbChainName,
+    properties: ChainProperties,
+    chain_hashes: &mut HashSet<ChainHash>,
+    new_db_chains: &mut IndexMap<DbChainName, ChainProperties, RandomState>,
+    connected_chains: &mut IndexMap<ChainName, ConnectedChain, RandomState>,
+    orders_per_chain: &mut Table<
+        '_,
+        <OrdersPerChainTable as TableTypes>::Key,
+        <OrdersPerChainTable as TableTypes>::Value,
+    >,
+    prepared_chains: &mut IndexMap<ChainName, PreparedChain, RandomState>,
+) -> Result<(), DbError> {
+    if !chain_hashes.insert(properties.hash) {
+        tracing::debug!(
+            "Found the {db_name:?} chain with the hash duplicate {:#} in the database.",
+            H64::from(properties.hash)
+        );
+
+        return Ok(());
+    }
+
+    let entry = match new_db_chains.entry(db_name) {
+        Entry::Occupied(entry) => {
+            tracing::debug!(
+                "Found 2 chains with same name ({:?}) in the database.",
+                entry.key()
+            );
+
+            return Ok(());
+        }
+        Entry::Vacant(entry) => entry,
+    };
+
+    tracing::debug!(name = ?entry.key(), properties = ?properties);
+
+    if let Some((name, connected)) = connected_chains.swap_remove_entry(&*entry.key().0) {
+        let given = connected.genesis.into();
+
+        if given != properties.genesis {
+            return Err(DbError::GenesisMismatch {
+                chain: entry.into_key().0,
+                expected: properties.genesis,
+                given,
+            });
+        }
+
+        tracing::debug!(
+            "The {name:?} chain stored in the database is assigned to the {:?} hash.",
+            H64::from(properties.hash),
+        );
+
+        prepared_chains.insert(
+            name,
+            PreparedChain {
+                hash: properties.hash,
+                connected,
+            },
+        );
+    } else if orders_per_chain.get_slot(properties.hash)?.is_some() {
+        tracing::warn!(
+            "The {:?} chain exists in the database but isn't present in the config.",
+            entry.key(),
+        );
+    } else {
+        tracing::info!(
+            "The {:?} chain exists in the database but isn't present in the config and has no \
+            orders. It'll be deleted.",
+            entry.key()
+        );
+
+        return Ok(());
+    }
+
+    entry.insert(properties);
+
+    Ok(())
+}
+
+fn process_keys(
+    public: &Public,
+    db_public: Public,
+    mut key_store: KeyStore,
+    old_publics_death_timestamps: Vec<(Public, Timestamp)>,
+    keys: Option<Table<'_, <KeysTable as TableTypes>::Key, <KeysTable as TableTypes>::Value>>,
+) -> Result<(Vec<(Public, Timestamp)>, Signer), DbError> {
+    // Since the current key can be changed, this array should've a capacity of one more element.
+    #[expect(clippy::arithmetic_side_effects)]
+    let mut new_old_publics_death_timestamps =
+        Vec::with_capacity(old_publics_death_timestamps.len() + 1);
+    let mut filtered_old_pairs = HashMap::with_capacity(key_store.old_pairs_len());
+    let mut restored_key_timestamp = None;
+    let print_about_duplicate = |old_public| {
+        tracing::debug!(
+            "Found a public key duplicate {:#} in the database.",
+            H256::from(old_public)
+        );
+    };
+
+    for (old_public, timestamp) in old_publics_death_timestamps {
+        match key_store.remove(public) {
+            Some((entropy, name)) => {
+                tracing::info!(
+                    "The public key {:#} in the database was matched with `{OLD_SEED}{name}`.",
+                    H256::from(old_public)
+                );
+
+                filtered_old_pairs.insert(old_public, (entropy, name));
+                new_old_publics_death_timestamps.push((old_public, timestamp));
+            }
+            None if old_public == *public => {
+                if restored_key_timestamp.is_none() {
+                    restored_key_timestamp = Some(timestamp);
+                } else {
+                    print_about_duplicate(old_public);
+                }
+            }
+            None if filtered_old_pairs.contains_key(&old_public) => {
+                print_about_duplicate(old_public);
+            }
+            None => {
+                return Err(DbError::OldKeyNotFound {
+                    key: old_public,
+                    removed: timestamp,
+                })
             }
         }
-*/
-/*
-    pub fn currency_properties(&self, currency_name: &str) -> Result<&CurrencyProperties, ErrorDb> {
-        self.currencies
-            .get(currency_name)
-            .ok_or(ErrorDb::CurrencyKeyNotFound)
     }
 
-    pub fn currency_info(&self, currency_name: &str) -> Result<CurrencyInfo, ErrorDb> {
-        let currency = self.currency_properties(currency_name)?;
-        Ok(CurrencyInfo {
-            currency: currency_name.to_string(),
-            chain_name: currency.chain_name.clone(),
-            kind: currency.kind,
-            decimals: currency.decimals,
-            rpc_url: currency.rpc_url.clone(),
-            asset_id: currency.asset_id,
-        })
+    if *public != db_public {
+        if let Some(timestamp) = restored_key_timestamp {
+            tracing::info!(
+                "The current key {:#} will be changed to {:#} removed on {}.",
+                H256::from(db_public),
+                H256::from(*public),
+                timestamp,
+            );
+        } else {
+            tracing::info!(
+                "The current key {:#} will be changed to {:#}.",
+                H256::from(db_public),
+                H256::from(*public),
+            );
+        }
+
+        let is_db_public_in_circulation = keys.map_or(Ok(false), |table| {
+            table
+                .get_slot(&db_public)
+                .map(|slot_option| slot_option.is_some())
+        })?;
+
+        if is_db_public_in_circulation {
+            key_store
+                .remove(&db_public)
+                .ok_or(DbError::CurrentKeyNotFound(db_public))?;
+            new_old_publics_death_timestamps.push((db_public, Timestamp::now()?));
+        } else {
+            tracing::info!(
+                "The current key has no accounts associated with it and hence will be deleted."
+            );
+        }
     }
-*/
-//     pub fn rpc(&self) -> &str {
-//         &self.rpc
-//     }
 
-//     pub fn destination(&self) -> &Option<Account> {
-//         &self.destination
-//     }
-
-//     pub fn write(&self) -> Result<WriteTransaction<'_>> {
-//         self.db
-//             .begin_write()
-//             .map(WriteTransaction)
-//             .context("failed to begin a write transaction for the database")
-//     }
-
-//     pub fn read(&self) -> Result<ReadTransaction<'_>> {
-//         self.db
-//             .begin_read()
-//             .map(ReadTransaction)
-//             .context("failed to begin a read transaction for the database")
-//     }
-
-//     pub async fn properties(&self) -> RwLockReadGuard<'_, ChainProperties> {
-//         self.properties.read().await
-//     }
-
-//     pub fn pair(&self) -> &Pair {
-//         &self.pair
-//     }
-
-/*
-pub struct ReadTransaction(redb::ReadTransaction);
-
-impl ReadTransaction {
-    pub fn invoices(&self) -> Result<ReadInvoices> {
-        self.0
-            .open_table(INVOICES)
-            .map(ReadInvoices)
-            .with_context(|| format!("failed to open the `{}` table", INVOICES.name()))
-    }
+    Ok((
+        new_old_publics_death_timestamps,
+        key_store.into_signer::<false>(filtered_old_pairs),
+    ))
 }
 
-pub struct ReadInvoices<'a>(ReadOnlyTable<&'a [u8], Invoice>);
+pub mod arguments {
+    use super::definitions::{Account, Amount, ChainHash, CurrencyInfo, Public, Timestamp, Url};
 
-impl <'a> ReadInvoices<'a> {
-    pub fn get(&self, account: &Account) -> Result<Option<AccessGuard<'_, Invoice>>> {
-        self.0
-            .get(&*account)
-            .context("failed to get an invoice from the database")
+    pub struct InsertOrder<K> {
+        pub chain: ChainHash,
+        pub key: K,
+        pub public: Public,
+        pub callback: Url,
+        pub currency: CurrencyInfo,
+        pub amount: Amount,
+        pub account_lifetime: Timestamp,
+        pub payment_account: Account,
     }
-*/
-//     pub fn try_iter(
-//         &self,
-//     ) -> Result<impl Iterator<Item = Result<(AccessGuard<'_, &[u8; 32]>, AccessGuard<'_, Invoice>)>>>
-//     {
-//         self.0
-//             .iter()
-//             .context("failed to get the invoices iterator")
-//             .map(|iter| iter.map(|item| item.context("failed to get an invoice from the iterator")))
-//     }
-// }
-
-// pub struct WriteTransaction<'db>(redb::WriteTransaction<'db>);
-
-// impl<'db> WriteTransaction<'db> {
-//     pub fn root(&self) -> Result<Root<'db, '_>> {
-//         self.0
-//             .open_table(ROOT)
-//             .map(Root)
-//             .with_context(|| format!("failed to open the `{}` table", ROOT.name()))
-//     }
-
-//     pub fn invoices(&self) -> Result<WriteInvoices<'db, '_>> {
-//         self.0
-//             .open_table(INVOICES)
-//             .map(WriteInvoices)
-//             .with_context(|| format!("failed to open the `{}` table", INVOICES.name()))
-//     }
-
-//     pub fn commit(self) -> Result<()> {
-//         self.0
-//             .commit()
-//             .context("failed to commit a write transaction in the database")
-//     }
-// }
-
-// pub struct WriteInvoices<'db, 'tx>(Table<'db, 'tx, &'static [u8; 32], Invoice>);
-
-// impl WriteInvoices<'_, '_> {
-//     pub fn save(
-//         &mut self,
-//         account: &Account,
-//         invoice: &Invoice,
-//     ) -> Result<Option<AccessGuard<'_, Invoice>>> {
-//         self.0
-//             .insert(AsRef::<[u8; 32]>::as_ref(account), invoice)
-//             .context("failed to save an invoice in the database")
-//     }
-// }
-
-// pub struct Root<'db, 'tx>(Table<'db, 'tx, &'static str, Vec<u8>>);
-
-// impl Root<'_, '_> {
-//     pub fn save_last_block(&mut self, number: BlockNumber) -> Result<()> {
-//         self.0
-//             .insert(LAST_BLOCK, Compact(number).encode())
-//             .context("context")?;
-
-//         Ok(())
-//     }
-// }
-
-// fn get_slot(table: &Table<'_, &str, Vec<u8>>, key: &str) -> Result<Option<Vec<u8>>> {
-//     table
-//         .get(key)
-//         .map(|slot_option| slot_option.map(|slot| slot.value().clone()))
-//         .with_context(|| format!("failed to get the {key:?} slot"))
-// }
-
-// fn decode_slot<T: Decode>(mut slot: &[u8], key: &str) -> Result<T> {
-//     T::decode(&mut slot).with_context(|| format!("failed to decode the {key:?} slot"))
-// }
-
-// fn insert_daemon_info(
-//     table: &mut Table<'_, '_, &str, Vec<u8>>,
-//     rpc: String,
-//     key: Public,
-// ) -> Result<()> {
-//     table
-//         .insert(DAEMON_INFO, DaemonInfo { rpc, key }.encode())
-//         .map(|_| ())
-//         .context("failed to insert the daemon info")
-// }
+}

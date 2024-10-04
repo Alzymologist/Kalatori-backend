@@ -3,11 +3,15 @@ depth = 3600000 # 1 hour.
 debug = true
 
 [[chain]]
-name = "polkadot"
+name = "statemint"
 endpoints = [
     "ws://localhost:8000"
 ]
 
-[chain.native]
-name = "DOT"
-decimals = 10
+[[chain.asset]]
+name = "USDC"
+id = 1337
+
+[[chain.asset]]
+name = "USDt"
+id = 1984

@@ -1,9 +1,5 @@
 use crate::{
     error::{Error, ServerError},
-    handlers::{
-        health::{audit, health, status},
-        order::{force_withdrawal, investigate, order},
-    },
     state::State,
 };
 use axum::{
@@ -12,10 +8,17 @@ use axum::{
     routing, Router,
 };
 use axum_macros::debug_handler;
+use handlers::{
+    health::{audit, health, status},
+    order::{force_withdrawal, investigate, order},
+};
 use std::{borrow::Cow, collections::HashMap, future::Future, net::SocketAddr};
-
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
+
+mod handlers;
+
+pub mod definitions;
 
 pub const MODULE: &str = module_path!();
 
@@ -46,7 +49,9 @@ pub async fn new(
         .await
         .map_err(|_| ServerError::TcpListenerBind(host))?;
 
-    Ok(async {
+    Ok(async move {
+        tracing::info!("The server is listening on {host}.");
+
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_notification.cancelled_owned())
             .await

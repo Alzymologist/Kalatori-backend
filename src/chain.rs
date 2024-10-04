@@ -1,21 +1,20 @@
-//! Everything related to actual interaction with blockchain
+//! Everything related to the actual interaction with a blockchain.
 
-use std::collections::HashMap;
-
+use crate::{
+    arguments::Chain,
+    error::{ChainError, Error},
+    server::definitions::api_v2::OrderInfo,
+    signer::Signer,
+    state::State,
+    utils::task_tracker::TaskTracker,
+};
+use std::{collections::HashMap, sync::Arc};
 use substrate_crypto_light::common::AccountId32;
 use tokio::{
     sync::{mpsc, oneshot},
     time::{timeout, Duration},
 };
 use tokio_util::sync::CancellationToken;
-
-use crate::{
-    definitions::{api_v2::OrderInfo, Chain},
-    error::{ChainError, Error},
-    signer::Signer,
-    state::State,
-    task_tracker::TaskTracker,
-};
 
 pub mod definitions;
 pub mod payout;
@@ -44,7 +43,7 @@ impl ChainManager {
     pub fn ignite(
         chain: Vec<Chain>,
         state: State,
-        signer: Signer,
+        signer: Arc<Signer>,
         task_tracker: TaskTracker,
         cancellation_token: CancellationToken,
     ) -> Result<Self, Error> {
@@ -56,19 +55,19 @@ impl ChainManager {
 
         // start network monitors
         for c in chain {
-            if c.endpoints.is_empty() {
-                return Err(Error::EmptyEndpoints(c.name));
+            if c.config.endpoints.is_empty() {
+                return Err(Error::EmptyEndpoints(c.name.0.to_string()));
             }
             let (chain_tx, chain_rx) = mpsc::channel(1024);
             watch_chain.insert(c.name.clone(), chain_tx.clone());
 
             // this MUST assert that there are no duplicates in requested assets
-            if let Some(ref a) = c.native_token {
+            if let Some(ref a) = c.config.inner.native {
                 if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
                     return Err(Error::DuplicateCurrency(a.name.clone()));
                 }
             }
-            for a in &c.asset {
+            for a in &c.config.inner.asset {
                 if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
                     return Err(Error::DuplicateCurrency(a.name.clone()));
                 }
@@ -79,7 +78,7 @@ impl ChainManager {
                 chain_tx.clone(),
                 chain_rx,
                 state.interface(),
-                signer.interface(),
+                signer.clone(),
                 task_tracker.clone(),
                 cancellation_token.clone(),
             );
@@ -101,7 +100,7 @@ impl ChainManager {
                                 } else {
                                     let _unused = request
                                         .res
-                                        .send(Err(ChainError::InvalidChain(chain.to_string())));
+                                        .send(Err(ChainError::InvalidChain(chain.0.to_string())));
                                 }
                             } else {
                                 let _unused = request
@@ -117,7 +116,7 @@ impl ChainManager {
                                 } else {
                                     let _unused = request
                                         .res
-                                        .send(Err(ChainError::InvalidChain(chain.to_string())));
+                                        .send(Err(ChainError::InvalidChain(chain.0.to_string())));
                                 }
                             } else {
                                 let _unused = request
@@ -140,7 +139,7 @@ impl ChainManager {
                     }
                 }
 
-                Ok("Chain manager is shutting down".into())
+                Ok("Chain manager is shutting down")
             });
 
         Ok(Self { tx })

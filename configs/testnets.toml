@@ -5,51 +5,53 @@ in-memory-db = true
 
 [[chain]]
 name = "westend"
-native-token = "WND"
-decimals = 12
 endpoints = [
     "wss://westend-rpc.polkadot.io",
     "wss://westend-rpc.dwellir.com",
 ]
 
-[[chain]]
-name = "westmint"
-native-token = "WND AH"
+[chain.native]
+name = "WND"
 decimals = 12
-endpoints = [
-    "wss://westend-asset-hub-rpc.polkadot.io",
-    "wss://westmint-rpc.dwellir.com",
-]
 
-[[chain.asset]]
-name = "JOE"
-id = 8
+# [[chain]]
+# name = "westmint"
+# native-token = "WND AH"
+# decimals = 12
+# endpoints = [
+#     "wss://westend-asset-hub-rpc.polkadot.io",
+#     "wss://westmint-rpc.dwellir.com",
+# ]
 
-[[chain.asset]]
-name = "TEST"
-id = 1234
+# [[chain.asset]]
+# name = "JOE"
+# id = 8
 
-[[chain]]
-name = "rococo"
-native-token = "ROC"
-decimals = 12
-endpoints = [
-    "wss://rococo-rpc.polkadot.io",
-]
+# [[chain.asset]]
+# name = "TEST"
+# id = 1234
 
-[[chain]]
-name = "assethub-rococo"
-native-token = "ROC AH"
-decimals = 12
-endpoints = [
-    "wss://rococo-asset-hub-rpc.polkadot.io",
-    "wss://rococo-asset-hub-rpc.dwellir.com",
-]
+# [[chain]]
+# name = "rococo"
+# native-token = "ROC"
+# decimals = 12
+# endpoints = [
+#     "wss://rococo-rpc.polkadot.io",
+# ]
 
-[[chain.asset]]
-name = "USDT"
-id = 1984
+# [[chain]]
+# name = "assethub-rococo"
+# native-token = "ROC AH"
+# decimals = 12
+# endpoints = [
+#     "wss://rococo-asset-hub-rpc.polkadot.io",
+#     "wss://rococo-asset-hub-rpc.dwellir.com",
+# ]
 
-[[chain.asset]]
-name = "TUSDT"
-id = 7777
+# [[chain.asset]]
+# name = "USDT"
+# id = 1984
+
+# [[chain.asset]]
+# name = "TUSDT"
+# id = 7777

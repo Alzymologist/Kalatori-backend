@@ -1,15 +1,25 @@
 use crate::{
     arguments::{OLD_SEED, SEED},
-    definitions::api_v2::OrderStatus,
+    chain_wip::definitions::H256,
+    database::{
+        definitions::{BlockHash, Public, Timestamp, Version},
+        DB_VERSION,
+    },
+    server::definitions::api_v2::OrderStatus,
+    utils::task_tracker::TaskName,
 };
+use codec::Error as CodecError;
+use const_hex::FromHexError;
 use frame_metadata::v15::RuntimeMetadataV15;
-use jsonrpsee::core::ClientError;
+use jsonrpsee::core::ClientError as RpcError;
 use mnemonic_external::error::ErrorWordList;
-use parity_scale_codec::Error as ScaleError;
+use redb::{
+    CommitError, CompactionError, DatabaseError, StorageError as DbStorageError, TableError,
+    TransactionError,
+};
 use serde_json::Error as JsonError;
 use serde_json::Value;
-use sled::Error as DatabaseError;
-use std::{borrow::Cow, io::Error as IoError, net::SocketAddr};
+use std::{io::Error as IoError, net::SocketAddr, str::Utf8Error, time::SystemTimeError};
 use substrate_constructor::error::{ErrorFixMe, StorageRegistryError};
 use substrate_crypto_light::error::Error as CryptoError;
 use substrate_parser::error::{MetaVersionErrorPallets, ParserError, RegistryError, StorageError};
@@ -25,14 +35,29 @@ pub enum Error {
     #[error("failed to read a seed environment variable")]
     SeedEnv(#[from] SeedEnvError),
 
-    #[error("failed to read the config file at {0:?}")]
-    ConfigFileRead(String, #[source] IoError),
+    #[error("failed to parse given filter directives for the logger")]
+    LoggerDirectives(#[from] ParseError),
 
-    #[error("failed to parse the config")]
-    ConfigFileParse(#[from] TomlError),
+    #[error("failed to initialize the asynchronous runtime")]
+    Runtime(#[source] IoError),
 
-    #[error("failed to parse the config parameter `{0}`")]
-    ConfigParse(&'static str),
+    #[error("failed to listen for the shutdown signal")]
+    ShutdownSignal(#[source] IoError),
+
+    #[error("failed to complete {0}")]
+    Task(TaskName, #[source] TaskError),
+
+    #[error("got a database initialization error")]
+    Database(#[from] DbError),
+
+    #[error("failed to parse the recipient argument")]
+    RecipientParse(#[from] AccountParseError),
+
+    #[error("signer error is occurred")]
+    Signer(#[from] SignerError),
+
+    #[error("failed to process the config file")]
+    Config(#[from] ConfigError),
 
     #[error("chain {0:?} doesn't have any `endpoints` in the config")]
     EmptyEndpoints(String),
@@ -40,26 +65,11 @@ pub enum Error {
     #[error("RPC server error is occurred")]
     Chain(#[from] ChainError),
 
-    #[error("database error is occurred")]
-    Db(#[from] DbError),
-
     #[error("order error is occurred")]
     Order(#[from] OrderError),
 
     #[error("daemon server error is occurred")]
     Server(#[from] ServerError),
-
-    #[error("signer error is occurred")]
-    Signer(#[from] SignerError),
-
-    #[error("failed to listen for the shutdown signal")]
-    ShutdownSignal(#[source] IoError),
-
-    #[error("failed to initialize the asynchronous runtime")]
-    Runtime(#[source] IoError),
-
-    #[error("failed to parse given filter directives for the logger ({0:?})")]
-    LoggerDirectives(String, #[source] ParseError),
 
     #[error("receiver account couldn't be parsed")]
     RecipientAccount(#[from] CryptoError),
@@ -72,14 +82,132 @@ pub enum Error {
 }
 
 #[derive(Debug, Error)]
-pub enum SeedEnvError {
-    #[error("one of the `{OLD_SEED}*` variables has an invalid Unicode key")]
-    InvalidUnicodeOldSeedKey,
-    #[error("`{0}` variable contains an invalid Unicode text")]
-    InvalidUnicodeValue(Cow<'static, str>),
-    #[error("`{SEED}` isn't present")]
-    SeedNotPresent,
+#[expect(clippy::module_name_repetitions)]
+pub enum ConfigError {
+    #[error("failed to read the config file")]
+    Read(#[from] IoError),
+
+    #[error("failed to parse the config")]
+    Parse(#[from] TomlError),
 }
+
+#[derive(Debug, Error)]
+#[expect(clippy::module_name_repetitions)]
+pub enum SeedEnvError {
+    #[error("one of the `{OLD_SEED}*` variables has an invalid Unicode text in the name")]
+    InvalidUnicodeOldKey(#[from] Utf8Error),
+    #[error("`{SEED}` variable contains an invalid Unicode text")]
+    InvalidUnicodeValue,
+    #[error("`{OLD_SEED}{0}` variable contains an invalid Unicode text")]
+    InvalidUnicodeOldValue(String),
+    #[error("`{SEED}` is required & not set")]
+    NotSet,
+    #[error("failed to parse a mnemonic phrase")]
+    Mnemonic(#[from] ErrorWordList),
+}
+
+#[derive(Debug, Error)]
+#[expect(clippy::module_name_repetitions)]
+pub enum TaskError {
+    #[error("chain has no endpoint in the config")]
+    NoChainEndpoints,
+
+    #[error("got an API error")]
+    Api(#[from] ApiError),
+
+    #[error("got an RPC error")]
+    Rpc(#[from] RpcError),
+
+    #[error(
+        "found 2 or more chains with the same name in the config (see the connector name above)"
+    )]
+    ChainDuplicate,
+
+    #[error("config of this chain contains 2 or more identical endpoints")]
+    DuplicateEndpoints,
+
+    #[error("failed to parse the chain interval for this chain")]
+    ChainInterval(#[from] ChainIntervalError),
+}
+
+#[derive(Debug, Error)]
+#[expect(clippy::module_name_repetitions)]
+pub enum ChainIntervalError {
+    #[error("`restart-gap` isn't set neither in the config root nor for this chain")]
+    RestartGap,
+
+    #[error("`account-lifetime` isn't set neither in the config root nor for this chain")]
+    AccountLifetime,
+}
+
+#[derive(Debug, Error)]
+#[expect(clippy::module_name_repetitions)]
+pub enum ApiError {
+    #[error("failed to fetch the genesis hash")]
+    GenesisHash(#[source] RpcError),
+    // #[error("failed to fetch the finalized head")]
+    // FinalizedHead(#[source] RpcError),
+
+    // #[error("got an error while processing metadata")]
+    // MetadataError(#[from] MetadataError),
+
+    // #[error("failed to fetch the runtime version")]
+    // RuntimeVersion(#[source] RpcError),
+
+    // #[error("runtime metadata has no {0} pallet")]
+    // PalletNotFound(Pallet),
+
+    // #[error("failed to find {0}")]
+    // ConstantNotFound(Constant),
+
+    // #[error("got an error from the SCALE parser")]
+    // Parser(#[from] ParserError<()>),
+}
+
+// #[derive(Debug, Error)]
+// #[expect(clippy::module_name_repetitions)]
+// pub enum MetadataError {
+//     #[error("failed to decode the runtime metadata")]
+//     Decode(#[from] CodecError),
+
+//     #[error("fetched metadata has an unexpected prefix")]
+//     UnexpectedPrefix(u32),
+
+//     #[error("version of fetched metadata is \"{0}\", the daemon supports only the \"14\" version")]
+//     UnsupportedVersion(u32),
+
+//     #[error("got an error while processing the {0:?} pallet's storage metadata")]
+//     Storage(PalletName, #[source] PalletStorageMetadataError),
+
+//     #[error("{0:?} pallet metadata wasn't found")]
+//     PalletNotFound(PalletName),
+// }
+
+// #[derive(Debug, Error)]
+// #[expect(clippy::module_name_repetitions)]
+// pub enum PalletStorageMetadataError {
+//     #[error("pallet has no storage metadata")]
+//     NotFound,
+
+//     #[error("got an error while processing the {0:?} storage entry metadata")]
+//     Entry(StorageEntryName, #[source] StorageEntryMetadataError),
+
+//     #[error("{0:?} storage entry metadata wasn't found")]
+//     EntryNotFound(StorageEntryName),
+// }
+
+// #[derive(Debug, Error)]
+// #[expect(clippy::module_name_repetitions)]
+// pub enum StorageEntryMetadataError {
+//     #[error("storage entry has the unexpected {got:?} type, expected the {expected:?} type")]
+//     UnexpectedStorageType {
+//         expected: StorageEntryTypeName,
+//         got: StorageEntryTypeName,
+//     },
+
+//     #[error("storage entry has an unexpected amount of hashers ({got:?}), expected {expected:?}")]
+//     UnexpectedStorageHashersAmount { expected: u8, got: u8 },
+// }
 
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
@@ -134,7 +262,7 @@ pub enum ChainError {
     BlockHashLength,
 
     #[error("WS client error is occurred")]
-    Client(#[from] ClientError),
+    Client(#[from] RpcError),
 
     #[error("threading error is occurred")]
     Tokio(#[from] JoinError),
@@ -287,56 +415,132 @@ pub enum ChainError {
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
-pub enum DbError {
-    #[error("currency key isn't found")]
-    CurrencyKeyNotFound,
+#[expect(clippy::module_name_repetitions)]
+pub enum AccountParseError {
+    #[error("provided string contains an invalid Unicode text")]
+    InvalidUnicode,
 
-    #[error("database engine isn't running")]
-    DbEngineDown,
+    #[error("failed to parse an address string in the hexadecimal format")]
+    Hex(#[from] FromHexError),
 
-    #[error("database internal error is occurred")]
-    DbInternalError(#[from] DatabaseError),
-
-    #[error("failed to start the database service")]
-    DbStartError(DatabaseError),
-
-    #[error("operating system related I/O error is occurred")]
-    IoError(#[from] IoError),
-
-    #[error("database storage decoding error is occurred")]
-    CodecError(#[from] ScaleError),
-
-    #[error("order {0:?} isn't found")]
-    OrderNotFound(String),
-
-    #[error("order {0:?} was already paid")]
-    AlreadyPaid(String),
-
-    #[error("order {0:?} isn't paid yet")]
-    NotPaid(String),
-
-    #[error("there was already an attempt to withdraw order {0:?}")]
-    WithdrawalWasAttempted(String),
+    #[error("failed to parse an address string in the SS58 format")]
+    Ss58(#[from] CryptoError),
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
+pub enum DbError {
+    #[error("failed to create/open the database")]
+    Initialization(#[from] DatabaseError),
+
+    #[error("failed to create a write transaction")]
+    TxWrite(#[source] TransactionError),
+
+    #[error("failed to create a read transaction")]
+    TxRead(#[source] TransactionError),
+
+    #[error("failed to commit a transaction")]
+    Commit(#[from] CommitError),
+
+    #[error("failed to compact the database")]
+    Compact(#[from] CompactionError),
+
+    #[error("failed to open a table")]
+    OpenTable(#[source] TableError),
+
+    #[error("failed to delete a table")]
+    DeleteTable(#[source] TableError),
+
+    #[error("failed to insert a value")]
+    Insert(#[source] DbStorageError),
+
+    #[error("failed to get a value")]
+    Get(#[source] DbStorageError),
+
+    #[error("failed to get a range")]
+    Range(#[source] DbStorageError),
+
+    #[error("failed to get the next element from a range")]
+    RangeIter(#[source] DbStorageError),
+
+    #[error("existing database doesn't contain its format version")]
+    NoVersion,
+
+    #[error("existing database doesn't contain the daemon info")]
+    NoDaemonInfo,
+
+    #[error("database contains an invalid format version ({}), expected {}", .0 .0, DB_VERSION.0)]
+    UnexpectedVersion(Version),
+
+    #[error("failed to decode a SCALE-encoded value")]
+    Codec(#[from] CodecError),
+
+    #[error("failed to get list of tables")]
+    TableList(#[source] DbStorageError),
+
+    #[error(
+        "chain {chain:?} has different genesis hashes in the database ({:#}) & from an RPC \
+        server ({:#}), try to check RPC server URLs in the config for correctness",
+        H256::from(*expected),
+        H256::from(*given)
+    )]
+    GenesisMismatch {
+        chain: String,
+        expected: BlockHash,
+        given: BlockHash,
+    },
+
+    #[error(
+        "public key {:#} that was removed on {removed} has no matching seed among `{OLD_SEED}*`",
+        H256::from(*key)
+    )]
+    OldKeyNotFound { key: Public, removed: Timestamp },
+
+    #[error("current key {:#} has no matching seed among `{OLD_SEED}*`", H256::from(*.0))]
+    CurrentKeyNotFound(Public),
+
+    #[error("failed to create a timestamp")]
+    Timestamp(#[from] TimestampError),
+
+    #[error("got an order error")]
+    Order(#[from] OrderError),
+}
+
+#[derive(Debug, Error)]
+#[expect(clippy::module_name_repetitions)]
 pub enum OrderError {
-    #[error("invoice amount is less than the existential deposit")]
-    LessThanExistentialDeposit(f64),
+    #[error("order wasn't found")]
+    NotFound,
 
-    #[error("unknown currency")]
+    #[error("order is already paid")]
+    Paid,
+
+    #[error("order has recorded transactions")]
+    NotEmptyTxs,
+
+    #[error("order amount is less than the existential deposit of the given currency")]
+    ExistentialDeposit(f64),
+
+    #[error("got an unknown currency")]
     UnknownCurrency,
-
-    #[error("order parameter is missing: {0:?}")]
-    MissingParameter(String),
-
-    #[error("order parameter invalid: {0:?}")]
-    InvalidParameter(String),
 
     #[error("internal error is occurred")]
     InternalError,
+}
+
+#[derive(Debug, Error)]
+#[expect(clippy::module_name_repetitions)]
+pub enum TimestampError {
+    #[error("system clock's drifted backwards")]
+    ClockDrift(#[from] SystemTimeError),
+
+    #[error(
+        "given parameters for a timestamp were too big & resulted in an overflow, \
+        a timestamp can't store more than {} milliseconds (be later than {})",
+        Timestamp::MAX,
+        Timestamp::MAX_STRING
+    )]
+    Overflow,
 }
 
 #[derive(Debug, Error)]
@@ -372,17 +576,8 @@ pub enum UtilError {
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
 pub enum SignerError {
-    #[error("failed to read {0:?}")]
-    Env(String),
-
-    #[error("signer is down")]
-    SignerDown,
-
-    #[error("seed phrase is invalid")]
-    InvalidSeed(#[from] ErrorWordList),
-
-    #[error("derivation was failed")]
-    InvalidDerivation(#[from] CryptoError),
+    #[error("failed to derive the pair for an invoice account")]
+    Derive(#[from] CryptoError),
 }
 
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]
@@ -422,6 +617,12 @@ mod pretty_cause {
 
     impl<T: Error> Display for Wrapper<'_, T> {
         fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+            f.write_str("\n    ")?;
+
+            Display::fmt(&self.0, f)?;
+
+            f.write_str(".")?;
+
             let Some(cause) = self.0.source() else {
                 // If an error has no source, print nothing.
                 return Ok(());
@@ -498,13 +699,21 @@ mod pretty_cause {
         };
 
         #[test]
-        fn empty() {
-            assert!(TestError::empty().pretty_cause().to_string().is_empty());
+        fn no_cause() {
+            assert_eq!(
+                TestError::no_source().pretty_cause().to_string(),
+                "\n    TestError(0)."
+            );
         }
 
         #[test]
         fn single() {
-            const MESSAGE: &str = "\n\nCaused by: TestError(0).";
+            const MESSAGE: &str = indoc::indoc! {"
+
+                    TestError(1).
+
+                Caused by: TestError(0)."
+            };
 
             assert_eq!(TestError::nested(1).pretty_cause().to_string(), MESSAGE);
         }
@@ -512,7 +721,10 @@ mod pretty_cause {
         #[test]
         fn multiple() {
             const MESSAGE: &str = indoc::indoc! {"
-                \n\nCaused by:
+
+                    TestError(3).
+
+                Caused by:
                     0: TestError(2).
                     1: TestError(1).
                     2: TestError(0)."
@@ -523,10 +735,17 @@ mod pretty_cause {
 
         #[test]
         fn overload() {
-            let message = TestError::nested(OVERLOAD + 5).pretty_cause().to_string();
+            let message = TestError::nested(OVERLOAD.saturating_add(5))
+                .pretty_cause()
+                .to_string();
             let mut expected_message = String::with_capacity(message.len());
 
-            expected_message.push_str("\n\nCaused by:");
+            expected_message.push_str(indoc::indoc! {"
+
+                    TestError(10004).
+
+                Caused by:"
+            });
 
             for number in 0..=OVERLOAD {
                 write!(
@@ -541,7 +760,8 @@ mod pretty_cause {
             }
 
             expected_message.push_str(indoc::indoc! {"
-                \n>9999: TestError(3).
+
+                >9999: TestError(3).
                 >9999: TestError(2).
                 >9999: TestError(1).
                 >9999: TestError(0)."
@@ -557,7 +777,7 @@ mod pretty_cause {
         }
 
         impl TestError {
-            fn empty() -> Self {
+            fn no_source() -> Self {
                 Self {
                     source: None,
                     number: 0,
@@ -565,7 +785,7 @@ mod pretty_cause {
             }
 
             fn nested(nest: u16) -> Self {
-                let mut e = Self::empty();
+                let mut e = Self::no_source();
 
                 for _ in 0..nest {
                     e = Self {

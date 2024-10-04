@@ -1,7 +1,6 @@
 //! Common objects for chain interaction system
 
 use jsonrpsee::ws_client::WsClient;
-use primitive_types::H256;
 use substrate_crypto_light::common::{AccountId32, AsBase58};
 use tokio::sync::oneshot;
 
@@ -10,36 +9,11 @@ use crate::{
         rpc::{asset_balance_at_account, system_balance_at_account},
         tracker::ChainWatcher,
     },
-    definitions::{
-        api_v2::{OrderInfo, Timestamp},
-        Balance,
-    },
-    error::{ChainError, NotHex},
-    utils::unhex,
+    chain_wip::definitions::BlockHash,
+    database::definitions::Timestamp,
+    error::ChainError,
+    server::definitions::{api_v2::OrderInfo, Balance},
 };
-
-/// Abstraction to distinguish block hash from many other H256 things
-#[derive(Debug, Clone)]
-pub struct BlockHash(pub primitive_types::H256);
-
-impl BlockHash {
-    /// Convert block hash to RPC-friendly format
-    pub fn to_string(&self) -> String {
-        format!("0x{}", hex::encode(&self.0))
-    }
-
-    /// Convert string returned by RPC to typesafe block
-    ///
-    /// TODO: integrate nicely with serde
-    pub fn from_str(s: &str) -> Result<Self, crate::error::ChainError> {
-        let block_hash_raw = unhex(&s, NotHex::BlockHash)?;
-        Ok(BlockHash(H256(
-            block_hash_raw
-                .try_into()
-                .map_err(|_| ChainError::BlockHashLength)?,
-        )))
-    }
-}
 
 #[derive(Debug)]
 pub struct EventFilter<'a> {
