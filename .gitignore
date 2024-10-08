@@ -1,6 +1,9 @@
 target
 *.db
+*.txt
+kalatori.toml
 
 # IDE
+
 .vscode
 .idea

@@ -2,16 +2,6 @@
 
 use std::{collections::HashMap, time::SystemTime};
 
-use frame_metadata::v15::RuntimeMetadataV15;
-use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
-use serde_json::Value;
-use substrate_parser::{AsMetadata, ShortSpecs};
-use tokio::{
-    sync::mpsc,
-    time::{timeout, Duration},
-};
-use tokio_util::sync::CancellationToken;
-
 use crate::{
     chain::{
         definitions::{BlockHash, ChainTrackerRequest, Invoice},
@@ -26,8 +16,17 @@ use crate::{
     error::ChainError,
     signer::Signer,
     state::State,
-    task_tracker::TaskTracker,
+    utils::task_tracker::TaskTracker,
 };
+use frame_metadata::v15::RuntimeMetadataV15;
+use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
+use serde_json::Value;
+use substrate_parser::{AsMetadata, ShortSpecs};
+use tokio::{
+    sync::mpsc,
+    time::{timeout, Duration},
+};
+use tokio_util::sync::CancellationToken;
 
 #[allow(clippy::too_many_lines)]
 pub fn start_chain_watch(
@@ -155,7 +154,7 @@ pub fn start_chain_watch(
                                 let signer_for_reaper = signer.interface();
                                 task_tracker.clone().spawn(format!("Initiate payout for order {}", id.clone()), async move {
                                     payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
-                                    Ok(format!("Payout attempt for order {id} terminated").into())
+                                    Ok(format!("Payout attempt for order {id} terminated"))
                                 });
                             }
                             ChainTrackerRequest::Shutdown(res) => {
@@ -167,7 +166,7 @@ pub fn start_chain_watch(
                     }
                 }
             }
-            Ok(format!("Chain {} monitor shut down", chain.name).into())
+            Ok(format!("Chain {} monitor shut down", chain.name))
         });
 }
 
@@ -295,7 +294,7 @@ impl ChainWatcher {
             }
             // this should reset chain monitor on timeout;
             // but if this breaks, it means that the latter is already down either way
-            Ok(format!("Block watch at {rpc} stopped").into())
+            Ok(format!("Block watch at {rpc} stopped"))
         });
 
         Ok(chain)

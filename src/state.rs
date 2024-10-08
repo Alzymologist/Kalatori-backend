@@ -8,11 +8,9 @@ use crate::{
     },
     error::{Error, OrderError},
     signer::Signer,
-    task_tracker::TaskTracker,
+    utils::task_tracker::TaskTracker,
 };
-
 use std::collections::HashMap;
-
 use substrate_crypto_light::common::{AccountId32, AsBase58};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -82,7 +80,7 @@ impl State {
                         .add_invoice(order, order_details, state.recipient)
                         .await;
                 }
-                Ok("All saved orders restored".into())
+                Ok("All saved orders restored")
             });
 
             loop {
@@ -158,7 +156,7 @@ impl State {
                 }
             }
 
-            Ok("State handler is shutting down".into())
+            Ok("State handler is shutting down")
         });
 
         Ok(Self { tx })
