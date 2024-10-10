@@ -4,7 +4,7 @@ use crate::{
     database::Database,
     definitions::api_v2::{
         CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse, OrderStatus,
-        ServerInfo, ServerStatus,
+        ServerHealth, ServerInfo, ServerStatus,
     },
     error::{Error, OrderError},
     signer::Signer,
@@ -13,6 +13,7 @@ use crate::{
 
 use std::collections::HashMap;
 
+use crate::definitions::api_v2::{Health, RpcInfo};
 use substrate_crypto_light::common::{AccountId32, AsBase58};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -122,6 +123,14 @@ impl State {
                                 };
                                 res.send(server_status).map_err(|_| Error::Fatal)?;
                             }
+                            StateAccessRequest::ServerHealth(res) => {
+                                let server_status = ServerHealth {
+                                    server_info: state.server_info.clone(),
+                                    connected_rpcs: state.chain_manager.connected_rpcs(),
+                                    status: Self::overall_health(state.chain_manager.connected_rpcs()),
+                                };
+                                res.send(server_status).map_err(|_| Error::Fatal)?;
+                            }
                             StateAccessRequest::OrderPaid(id) => {
                                 // Only perform actions if the record is saved in ledger
                                 match state.db.mark_paid(id.clone()).await {
@@ -164,6 +173,16 @@ impl State {
         Ok(Self { tx })
     }
 
+    fn overall_health(connected_rpcs: Vec<RpcInfo>) -> Health {
+        if connected_rpcs.iter().all(|rpc| rpc.status == Health::Ok) {
+            Health::Ok
+        } else if connected_rpcs.iter().any(|rpc| rpc.status == Health::Ok) {
+            Health::Degraded
+        } else {
+            Health::Critical
+        }
+    }
+
     pub async fn connect_chain(&self, assets: HashMap<String, CurrencyProperties>) {
         self.tx.send(StateAccessRequest::ConnectChain(assets)).await;
     }
@@ -184,6 +203,15 @@ impl State {
         let (res, rx) = oneshot::channel();
         self.tx
             .send(StateAccessRequest::ServerStatus(res))
+            .await
+            .map_err(|_| Error::Fatal)?;
+        rx.await.map_err(|_| Error::Fatal)
+    }
+
+    pub async fn server_health(&self) -> Result<ServerHealth, Error> {
+        let (res, rx) = oneshot::channel();
+        self.tx
+            .send(StateAccessRequest::ServerHealth(res))
             .await
             .map_err(|_| Error::Fatal)?;
         rx.await.map_err(|_| Error::Fatal)
@@ -253,6 +281,7 @@ enum StateAccessRequest {
         res: oneshot::Sender<bool>,
     },
     ServerStatus(oneshot::Sender<ServerStatus>),
+    ServerHealth(oneshot::Sender<ServerHealth>),
     OrderPaid(String),
 }
 

@@ -1442,6 +1442,7 @@ dependencies = [
  "mnemonic-external",
  "names",
  "parity-scale-codec",
+ "parking_lot 0.12.3",
  "primitive-types",
  "reqwest",
  "scale-info",

@@ -1,10 +1,11 @@
 //! A tracker that follows individual chain
 
-use std::{collections::HashMap, time::SystemTime};
-
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
+use parking_lot::RwLock;
 use serde_json::Value;
+use std::sync::Arc;
+use std::{collections::HashMap, time::SystemTime};
 use substrate_parser::{AsMetadata, ShortSpecs};
 use tokio::{
     sync::mpsc,
@@ -12,6 +13,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::definitions::api_v2::{Health, RpcInfo};
 use crate::{
     chain::{
         definitions::{BlockHash, ChainTrackerRequest, Invoice},
@@ -38,6 +40,7 @@ pub fn start_chain_watch(
     signer: Signer,
     task_tracker: TaskTracker,
     cancellation_token: CancellationToken,
+    connected_rpcs: Arc<RwLock<Vec<RpcInfo>>>,
 ) {
     task_tracker
         .clone()
@@ -51,7 +54,26 @@ pub fn start_chain_watch(
                 if shutdown || cancellation_token.is_cancelled() {
                     break;
                 }
+
+                {
+                    let mut connected_rpcs_guard = connected_rpcs.write();
+                    if let Some(rpc_info) = connected_rpcs_guard.iter_mut().find(|rpc_info| {
+                        rpc_info.rpc_url == *endpoint && rpc_info.chain_name == chain.name
+                    }) {
+                        rpc_info.status = Health::Degraded;
+                    }
+                }
+
                 if let Ok(client) = WsClientBuilder::default().build(endpoint).await {
+
+                    {
+                        let mut connected_rpcs_guard = connected_rpcs.write();
+                        if let Some(rpc_info) = connected_rpcs_guard.iter_mut().find(|rpc_info| {
+                            rpc_info.rpc_url == *endpoint && rpc_info.chain_name == chain.name
+                        }) {
+                            rpc_info.status = Health::Ok;
+                        }
+                    }
                     // prepare chain
                     let watcher = match ChainWatcher::prepare_chain(&client, chain.clone(), &mut watched_accounts, endpoint, chain_tx.clone(), state.interface(), task_tracker.clone())
                         .await
@@ -163,6 +185,15 @@ pub fn start_chain_watch(
                                 let _ = res.send(());
                                 break;
                             }
+                        }
+                    }
+                } else {
+                    {
+                        let mut connected_rpcs_guard = connected_rpcs.write();
+                        if let Some(rpc_info) = connected_rpcs_guard.iter_mut().find(|rpc_info| {
+                            rpc_info.rpc_url == *endpoint && rpc_info.chain_name == chain.name
+                        }) {
+                            rpc_info.status = Health::Critical;
                         }
                     }
                 }
