@@ -14,7 +14,7 @@ use crate::{
     error::{ChainError, Error},
     signer::Signer,
     state::State,
-    task_tracker::TaskTracker,
+    utils::task_tracker::TaskTracker,
 };
 
 pub mod definitions;
@@ -140,7 +140,7 @@ impl ChainManager {
                     }
                 }
 
-                Ok("Chain manager is shutting down".into())
+                Ok("Chain manager is shutting down")
             });
 
         Ok(Self { tx })

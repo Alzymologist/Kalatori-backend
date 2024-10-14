@@ -78,7 +78,7 @@ pub fn decimal_exponent_product(decimals: api_v2::Decimals) -> f64 {
 pub mod api_v2 {
     use std::collections::HashMap;
 
-    use parity_scale_codec::{Decode, Encode};
+    use codec::{Decode, Encode};
     use serde::{Deserialize, Serialize, Serializer};
 
     pub const AMOUNT: &str = "amount";
