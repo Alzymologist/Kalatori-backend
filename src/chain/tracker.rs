@@ -1,10 +1,9 @@
 //! A tracker that follows individual chain
 
-use std::{collections::HashMap, time::SystemTime};
-
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use serde_json::Value;
+use std::{collections::HashMap, time::SystemTime};
 use substrate_parser::{AsMetadata, ShortSpecs};
 use tokio::{
     sync::mpsc,
@@ -12,6 +11,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::definitions::api_v2::{Health, RpcInfo};
 use crate::{
     chain::{
         definitions::{BlockHash, ChainTrackerRequest, Invoice},
@@ -38,6 +38,7 @@ pub fn start_chain_watch(
     signer: Signer,
     task_tracker: TaskTracker,
     cancellation_token: CancellationToken,
+    rpc_update_tx: mpsc::Sender<RpcInfo>,
 ) {
     task_tracker
         .clone()
@@ -51,9 +52,30 @@ pub fn start_chain_watch(
                 if shutdown || cancellation_token.is_cancelled() {
                     break;
                 }
+
+                let _ = rpc_update_tx.send(RpcInfo {
+                    chain_name: chain.name.clone(),
+                    rpc_url: endpoint.clone(),
+                    status: Health::Degraded,
+                }).await;
+
                 if let Ok(client) = WsClientBuilder::default().build(endpoint).await {
+                    let _ = rpc_update_tx.send(RpcInfo {
+                        chain_name: chain.name.clone(),
+                        rpc_url: endpoint.clone(),
+                        status: Health::Ok,
+                    }).await;
+
                     // prepare chain
-                    let watcher = match ChainWatcher::prepare_chain(&client, chain.clone(), &mut watched_accounts, endpoint, chain_tx.clone(), state.interface(), task_tracker.clone())
+                    let watcher = match ChainWatcher::prepare_chain(
+                        &client,
+                        chain.clone(),
+                        &mut watched_accounts,
+                        endpoint,
+                        chain_tx.clone(),
+                        state.interface(),
+                        task_tracker.clone(),
+                    )
                         .await
                     {
                         Ok(a) => a,
@@ -165,6 +187,12 @@ pub fn start_chain_watch(
                             }
                         }
                     }
+                } else {
+                    let _ = rpc_update_tx.send(RpcInfo {
+                        chain_name: chain.name.clone(),
+                        rpc_url: endpoint.clone(),
+                        status: Health::Critical,
+                    }).await;
                 }
             }
             Ok(format!("Chain {} monitor shut down", chain.name).into())

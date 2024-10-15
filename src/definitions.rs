@@ -176,6 +176,7 @@ pub mod api_v2 {
     pub enum WithdrawalStatus {
         Waiting,
         Failed,
+        Forced,
         Completed,
     }
 
@@ -185,24 +186,23 @@ pub mod api_v2 {
         pub supported_currencies: HashMap<std::string::String, CurrencyProperties>,
     }
 
-    #[allow(dead_code)] // TODO: Use this for health response?
     #[derive(Debug, Serialize)]
-    struct ServerHealth {
-        server_info: ServerInfo,
-        connected_rpcs: Vec<RpcInfo>,
-        status: Health,
+    pub struct ServerHealth {
+        pub server_info: ServerInfo,
+        pub connected_rpcs: Vec<RpcInfo>,
+        pub status: Health,
     }
 
-    #[derive(Debug, Serialize)]
-    struct RpcInfo {
-        rpc_url: String,
-        chain_name: String,
-        status: Health,
+    #[derive(Debug, Serialize, Clone)]
+    pub struct RpcInfo {
+        pub rpc_url: String,
+        pub chain_name: String,
+        pub status: Health,
     }
 
-    #[derive(Debug, Serialize)]
+    #[derive(Debug, Serialize, Clone, PartialEq, Copy)]
     #[serde(rename_all = "lowercase")]
-    enum Health {
+    pub enum Health {
         Ok,
         Degraded,
         Critical,

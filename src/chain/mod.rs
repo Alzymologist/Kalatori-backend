@@ -1,7 +1,6 @@
 //! Everything related to actual interaction with blockchain
 
 use std::collections::HashMap;
-
 use substrate_crypto_light::common::AccountId32;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -23,6 +22,7 @@ pub mod rpc;
 pub mod tracker;
 pub mod utils;
 
+use crate::definitions::api_v2::{Health, RpcInfo, ServerHealth};
 use definitions::{ChainRequest, ChainTrackerRequest, WatchAccount};
 use tracker::start_chain_watch;
 
@@ -35,7 +35,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(120000);
 /// RPC server handle
 #[derive(Clone, Debug)]
 pub struct ChainManager {
-    pub tx: tokio::sync::mpsc::Sender<ChainRequest>,
+    pub tx: mpsc::Sender<ChainRequest>,
 }
 
 impl ChainManager {
@@ -53,6 +53,9 @@ impl ChainManager {
         let mut watch_chain = HashMap::new();
 
         let mut currency_map = HashMap::new();
+
+        // Create a channel for receiving RPC status updates
+        let (rpc_update_tx, mut rpc_update_rx) = mpsc::channel(1024);
 
         // start network monitors
         for c in chain {
@@ -82,61 +85,86 @@ impl ChainManager {
                 signer.interface(),
                 task_tracker.clone(),
                 cancellation_token.clone(),
+                rpc_update_tx.clone(),
             );
         }
 
         task_tracker
             .clone()
             .spawn("Blockchain connections manager", async move {
+                let mut rpc_statuses: HashMap<(String, String), Health> = HashMap::new();
+
 
                 // start requests engine
-                while let Some(request) = rx.recv().await {
-                    match request {
-                        ChainRequest::WatchAccount(request) => {
-                            if let Some(chain) = currency_map.get(&request.currency) {
-                                if let Some(receiver) = watch_chain.get(chain) {
-                                    let _unused = receiver
-                                        .send(ChainTrackerRequest::WatchAccount(request))
-                                        .await;
-                                } else {
-                                    let _unused = request
-                                        .res
-                                        .send(Err(ChainError::InvalidChain(chain.to_string())));
+                loop {
+                    tokio::select! {
+                        Some(request) = rx.recv() => {
+                            match request {
+                                ChainRequest::WatchAccount(request) => {
+                                    if let Some(chain) = currency_map.get(&request.currency) {
+                                        if let Some(receiver) = watch_chain.get(chain) {
+                                            let _unused = receiver
+                                                .send(ChainTrackerRequest::WatchAccount(request))
+                                                .await;
+                                        } else {
+                                            let _unused = request
+                                                .res
+                                                .send(Err(ChainError::InvalidChain(chain.to_string())));
+                                        }
+                                    } else {
+                                        let _unused = request
+                                            .res
+                                            .send(Err(ChainError::InvalidCurrency(request.currency)));
+                                    }
                                 }
-                            } else {
-                                let _unused = request
-                                    .res
-                                    .send(Err(ChainError::InvalidCurrency(request.currency)));
+                                ChainRequest::Reap(request) => {
+                                    if let Some(chain) = currency_map.get(&request.currency) {
+                                        if let Some(receiver) = watch_chain.get(chain) {
+                                            let _unused =
+                                                receiver.send(ChainTrackerRequest::Reap(request)).await;
+                                        } else {
+                                            let _unused = request
+                                                .res
+                                                .send(Err(ChainError::InvalidChain(chain.to_string())));
+                                        }
+                                    } else {
+                                        let _unused = request
+                                            .res
+                                            .send(Err(ChainError::InvalidCurrency(request.currency)));
+                                    }
+                                }
+                                ChainRequest::Shutdown(res) => {
+                                    for (name, chain) in watch_chain.drain() {
+                                        let (tx, rx) = oneshot::channel();
+                                        if chain.send(ChainTrackerRequest::Shutdown(tx)).await.is_ok() {
+                                            if timeout(SHUTDOWN_TIMEOUT, rx).await.is_err() {
+                                                tracing::error!("Chain monitor for {name} took too much time to wind down, probably it was frozen. Discarding it.");
+                                            };
+                                        }
+                                    }
+                                    let _ = res.send(());
+                                    break;
+                                }
+                                ChainRequest::GetConnectedRpcs(res_tx) => {
+                                    // Collect the RpcInfo from rpc_statuses
+                                    let connected_rpcs: Vec<RpcInfo> = rpc_statuses.iter().map(|((chain_name, rpc_url), status)| {
+                                        RpcInfo {
+                                            chain_name: chain_name.clone(),
+                                            rpc_url: rpc_url.clone(),
+                                            status: *status,
+                                        }
+                                    }).collect();
+                                    let _ = res_tx.send(connected_rpcs);
+                                }
                             }
                         }
-                        ChainRequest::Reap(request) => {
-                            if let Some(chain) = currency_map.get(&request.currency) {
-                                if let Some(receiver) = watch_chain.get(chain) {
-                                    let _unused =
-                                        receiver.send(ChainTrackerRequest::Reap(request)).await;
-                                } else {
-                                    let _unused = request
-                                        .res
-                                        .send(Err(ChainError::InvalidChain(chain.to_string())));
-                                }
-                            } else {
-                                let _unused = request
-                                    .res
-                                    .send(Err(ChainError::InvalidCurrency(request.currency)));
-                            }
+                        Some(rpc_update) = rpc_update_rx.recv() => {
+                            rpc_statuses.insert(
+                                (rpc_update.chain_name.clone(), rpc_update.rpc_url.clone()),
+                                rpc_update.status,
+                            );
                         }
-                        ChainRequest::Shutdown(res) => {
-                            for (name, chain) in watch_chain.drain() {
-                                let (tx, rx) = oneshot::channel();
-                                if chain.send(ChainTrackerRequest::Shutdown(tx)).await.is_ok() {
-                                    if timeout(SHUTDOWN_TIMEOUT, rx).await.is_err() {
-                                        tracing::error!("Chain monitor for {name} took too much time to wind down, probably it was frozen. Discarding it.");
-                                    };
-                                }
-                            }
-                            let _ = res.send(());
-                            break;
-                        }
+                        else => break,
                     }
                 }
 
@@ -160,6 +188,15 @@ impl ChainManager {
             .await
             .map_err(|_| ChainError::MessageDropped)?;
         rx.await.map_err(|_| ChainError::MessageDropped)?
+    }
+
+    pub async fn get_connected_rpcs(&self) -> Result<Vec<RpcInfo>, Error> {
+        let (res_tx, res_rx) = oneshot::channel();
+        self.tx
+            .send(ChainRequest::GetConnectedRpcs(res_tx))
+            .await
+            .map_err(|_| Error::Fatal)?;
+        res_rx.await.map_err(|_| Error::Fatal)
     }
 
     pub async fn reap(
