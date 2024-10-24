@@ -132,7 +132,17 @@ impl State {
                                 // Only perform actions if the record is saved in ledger
                                 match state.db.mark_paid(id.clone()).await {
                                     Ok(order) => {
-                                        // TODO: callback here
+                                        if !order.callback.is_empty() {
+                                            let callback = order.callback.clone();
+                                            tokio::spawn(async move {
+                                                tracing::info!("Sending callback to: {}", callback);
+
+                                                // fire and forget
+                                                if let Err(e) = reqwest::Client::new().get(&callback).send().await {
+                                                    tracing::error!("Failed to send callback to {}: {:?}", callback, e);
+                                                }
+                                            });
+                                        }
                                         drop(state.chain_manager.reap(id, order, state.recipient).await);
                                     }
                                     Err(e) => {
