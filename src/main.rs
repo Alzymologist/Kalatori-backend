@@ -21,7 +21,6 @@ mod signer;
 mod state;
 mod utils;
 
-use crate::error::ChainError;
 use arguments::{CliArgs, Config, SeedEnvVars, DATABASE_DEFAULT};
 use chain::ChainManager;
 use database::ConfigWoChains;

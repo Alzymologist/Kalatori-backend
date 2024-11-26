@@ -54,9 +54,8 @@ impl Sub for Balance {
 }
 
 impl Balance {
-    #[allow(dead_code)] // TODO: remove once populated
     pub fn format(&self, decimals: api_v2::Decimals) -> f64 {
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss)]
         let float = **self as f64;
 
         float / decimal_exponent_product(decimals)
@@ -65,7 +64,7 @@ impl Balance {
     pub fn parse(float: f64, decimals: api_v2::Decimals) -> Self {
         let parsed_float = (float * decimal_exponent_product(decimals)).round();
 
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         Self(parsed_float as _)
     }
 }

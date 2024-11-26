@@ -1,6 +1,5 @@
 use crate::{
     arguments::{OLD_SEED, SEED},
-    definitions::api_v2::OrderStatus,
     utils::task_tracker::TaskName,
 };
 use codec::Error as ScaleError;
@@ -114,7 +113,7 @@ pub enum SeedEnvError {
 pub enum TaskError {}
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 pub enum ChainError {
     // TODO: this should be prevented by typesafety
     #[error("asset ID is missing")]
@@ -319,11 +318,8 @@ pub enum ChainError {
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 pub enum DbError {
-    #[error("currency key isn't found")]
-    CurrencyKeyNotFound,
-
     #[error("database engine isn't running")]
     DbEngineDown,
 
@@ -359,7 +355,7 @@ pub enum DbError {
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 pub enum OrderError {
     #[error("invoice amount is less than the existential deposit")]
     LessThanExistentialDeposit(f64),
@@ -370,28 +366,19 @@ pub enum OrderError {
     #[error("order parameter is missing: {0:?}")]
     MissingParameter(String),
 
-    #[error("order parameter invalid: {0:?}")]
-    InvalidParameter(String),
-
     #[error("internal error is occurred")]
     InternalError,
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 pub enum ForceWithdrawalError {
-    #[error("order parameter is missing: {0:?}")]
-    MissingParameter(String),
-
     #[error("order parameter is invalid: {0:?}")]
     InvalidParameter(String),
-
-    #[error("withdrawal was failed: \"{0:?}\"")]
-    WithdrawalError(String),
 }
 
 #[derive(Debug, thiserror::Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 pub enum ServerError {
     #[error("failed to bind the TCP listener to \"{0:?}\"")]
     TcpListenerBind(SocketAddr),
@@ -401,18 +388,15 @@ pub enum ServerError {
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 pub enum UtilError {
     #[error("...")]
     NotHex(NotHexError),
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 pub enum SignerError {
-    #[error("failed to read {0:?}")]
-    Env(String),
-
     #[error("signer is down")]
     SignerDown,
 

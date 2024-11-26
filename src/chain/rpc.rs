@@ -157,7 +157,7 @@ pub async fn genesis_hash(client: &WsClient) -> Result<BlockHash, ChainError> {
         .map_err(ChainError::Client)?;
     match genesis_hash_request {
         Value::String(x) => BlockHash::from_str(&x),
-        _ => return Err(ChainError::GenesisHashFormat),
+        _ => Err(ChainError::GenesisHashFormat),
     }
 }
 
@@ -178,7 +178,7 @@ pub async fn block_hash(
         .map_err(ChainError::Client)?;
     match block_hash_request {
         Value::String(x) => BlockHash::from_str(&x),
-        _ => return Err(ChainError::BlockHashFormat),
+        _ => Err(ChainError::BlockHashFormat),
     }
 }
 
@@ -206,21 +206,19 @@ pub async fn metadata(
             if let Some(meta_v15_bytes) = maybe_metadata_raw {
                 if meta_v15_bytes.starts_with(b"meta") {
                     match RuntimeMetadata::decode_all(&mut &meta_v15_bytes[4..]) {
-                        Ok(RuntimeMetadata::V15(runtime_metadata_v15)) => {
-                            return Ok(runtime_metadata_v15)
-                        }
-                        Ok(_) => return Err(ChainError::NoMetadataV15),
-                        Err(_) => return Err(ChainError::MetadataNotDecodeable),
+                        Ok(RuntimeMetadata::V15(runtime_metadata_v15)) => Ok(runtime_metadata_v15),
+                        Ok(_) => Err(ChainError::NoMetadataV15),
+                        Err(_) => Err(ChainError::MetadataNotDecodeable),
                     }
                 } else {
-                    return Err(ChainError::NoMetaPrefix);
+                    Err(ChainError::NoMetaPrefix)
                 }
             } else {
-                return Err(ChainError::NoMetadataV15);
+                Err(ChainError::NoMetadataV15)
             }
         }
-        _ => return Err(ChainError::MetadataFormat),
-    };
+        _ => Err(ChainError::MetadataFormat),
+    }
 }
 
 // fetch specs at known block
@@ -233,8 +231,8 @@ pub async fn specs(
         .request("system_properties", rpc_params![block.to_string()])
         .await?;
     match specs_request {
-        Value::Object(properties) => system_properties_to_short_specs(&properties, &metadata),
-        _ => return Err(ChainError::PropertiesFormat),
+        Value::Object(properties) => system_properties_to_short_specs(&properties, metadata),
+        _ => Err(ChainError::PropertiesFormat),
     }
 }
 
@@ -250,7 +248,7 @@ pub async fn next_block(
     client: &WsClient,
     blocks: &mut Subscription<BlockHead>,
 ) -> Result<BlockHash, ChainError> {
-    block_hash(&client, Some(next_block_number(blocks).await?)).await
+    block_hash(client, Some(next_block_number(blocks).await?)).await
 }
 
 #[derive(Deserialize, Debug)]
@@ -278,10 +276,10 @@ pub async fn assets_set_at_block(
     let mut assets_asset_storage_metadata = None;
     let mut assets_metadata_storage_metadata = None;
 
-    for pallet in metadata_v15.pallets.iter() {
+    for pallet in &metadata_v15.pallets {
         if let Some(storage) = &pallet.storage {
             if storage.prefix == "Assets" {
-                for entry in storage.entries.iter() {
+                for entry in &storage.entries {
                     if entry.name == "Asset" {
                         assets_asset_storage_metadata = Some(entry);
                     }
@@ -307,7 +305,7 @@ pub async fn assets_set_at_block(
             get_keys_from_storage(client, "Assets", "Asset", block).await?;
         for available_keys_assets_asset in available_keys_assets_asset_vec {
             if let Value::Array(ref keys_array) = available_keys_assets_asset {
-                for key in keys_array.iter() {
+                for key in keys_array {
                     if let Value::String(string_key) = key {
                         let value_fetch = get_value_from_storage(client, string_key, block).await?;
                         if let Value::String(ref string_value) = value_fetch {
@@ -342,7 +340,7 @@ pub async fn assets_set_at_block(
                             }?;
                             let mut verified_sufficient = false;
                             if let ParsedData::Composite(fields) = storage_entry.value.data {
-                                for field_data in fields.iter() {
+                                for field_data in &fields {
                                     if let Some(field_name) = &field_data.field_name {
                                         if field_name == "is_sufficient" {
                                             if let ParsedData::PrimitiveBool(is_it) =
@@ -417,7 +415,7 @@ pub async fn assets_set_at_block(
                                                         if let ParsedData::Composite(fields) =
                                                             value.data
                                                         {
-                                                            for field_data in fields.iter() {
+                                                            for field_data in &fields {
                                                                 if let Some(field_name) =
                                                                     &field_data.field_name
                                                                 {
@@ -558,7 +556,7 @@ pub async fn asset_balance_at_account(
             &metadata_v15.types,
         )?;
         if let ParsedData::Composite(fields) = value.data {
-            for field in fields.iter() {
+            for field in &fields {
                 if let ParsedData::PrimitiveU128 {
                     value,
                     specialty: SpecialtyUnsignedInteger::Balance,
@@ -594,10 +592,10 @@ pub async fn system_balance_at_account(
             &metadata_v15.types,
         )?;
         if let ParsedData::Composite(fields) = value.data {
-            for field in fields.iter() {
+            for field in &fields {
                 if field.field_name == Some("data".to_string()) {
                     if let ParsedData::Composite(inner_fields) = &field.data.data {
-                        for inner_field in inner_fields.iter() {
+                        for inner_field in inner_fields {
                             if inner_field.field_name == Some("free".to_string()) {
                                 if let ParsedData::PrimitiveU128 {
                                     value,
@@ -622,10 +620,10 @@ pub async fn transfer_events(
     block: &BlockHash,
     metadata_v15: &RuntimeMetadataV15,
 ) -> Result<Vec<Event>, ChainError> {
-    let events_entry_metadata = events_entry_metadata(&metadata_v15)?;
+    let events_entry_metadata = events_entry_metadata(metadata_v15)?;
 
     events_at_block(
-        &client,
+        client,
         block,
         Some(EventFilter {
             pallet: BALANCES,
@@ -651,8 +649,8 @@ async fn events_at_block(
             Value::Array(ref keys_array) => {
                 for key in keys_array {
                     if let Value::String(key) = key {
-                        let data_from_storage = get_value_from_storage(client, &key, block).await?;
-                        let key_bytes = unhex(&key, NotHexError::StorageValue)?;
+                        let data_from_storage = get_value_from_storage(client, key, block).await?;
+                        let key_bytes = unhex(key, NotHexError::StorageValue)?;
                         let value_bytes =
                             if let Value::String(data_from_storage) = data_from_storage {
                                 unhex(&data_from_storage, NotHexError::StorageValue)?
@@ -707,7 +705,7 @@ async fn events_at_block(
             }
         }
     }
-    return Ok(out);
+    Ok(out)
 }
 
 pub async fn current_block_number(

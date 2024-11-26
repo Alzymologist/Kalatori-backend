@@ -149,7 +149,7 @@ impl State {
                                     Err(e) => {
                                         tracing::error!(
                                             "Order was paid but this could not be recorded! {e:?}"
-                                        )
+                                        );
                                     }
                                 }
                             }
@@ -161,7 +161,7 @@ impl State {
                                     Err(e) => {
                                         tracing::error!(
                                             "Order was withdrawn but this could not be recorded! {e:?}"
-                                        )
+                                        );
                                     }
                                 }
                             }
@@ -169,9 +169,9 @@ impl State {
                                 match state.db.read_order(id.clone()).await {
                                     Ok(Some(order_info)) => {
                                         match state.chain_manager.reap(id.clone(), order_info.clone(), state.recipient).await {
-                                            Ok(_) => {
+                                            Ok(()) => {
                                                 match state.db.mark_forced(id.clone()).await {
-                                                    Ok(_) => {
+                                                    Ok(()) => {
                                                         tracing::info!("Order {id} successfully marked as force withdrawn");
                                                     }
                                                     Err(e) => {

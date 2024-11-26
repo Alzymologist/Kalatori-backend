@@ -1,7 +1,5 @@
 use crate::{
-    definitions::api_v2::{
-        InvalidParameter, OrderQuery, OrderResponse, OrderStatus, AMOUNT, CURRENCY,
-    },
+    definitions::api_v2::{InvalidParameter, OrderQuery, OrderResponse, AMOUNT, CURRENCY},
     error::{ForceWithdrawalError, OrderError},
     state::State,
 };
@@ -58,10 +56,10 @@ pub async fn process_order(
             .await
             .map_err(|_| OrderError::InternalError)
     } else {
-        return state
+        state
             .order_status(&order_id)
             .await
-            .map_err(|_| OrderError::InternalError);
+            .map_err(|_| OrderError::InternalError)
     }
 }
 
@@ -104,14 +102,6 @@ pub async fn order(
                 }]),
             )
                 .into_response(),
-            OrderError::InvalidParameter(parameter) => (
-                StatusCode::BAD_REQUEST,
-                Json([InvalidParameter {
-                    parameter,
-                    message: "parameter's format is invalid".into(),
-                }]),
-            )
-                .into_response(),
             OrderError::InternalError => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         },
     }
@@ -134,17 +124,6 @@ pub async fn force_withdrawal(
             (StatusCode::CREATED, Json(order_status)).into_response()
         }
         Ok(OrderResponse::NotFound) => (StatusCode::NOT_FOUND, "Order not found").into_response(),
-        Err(ForceWithdrawalError::WithdrawalError(a)) => {
-            (StatusCode::BAD_REQUEST, Json(a)).into_response()
-        }
-        Err(ForceWithdrawalError::MissingParameter(parameter)) => (
-            StatusCode::BAD_REQUEST,
-            Json([InvalidParameter {
-                parameter,
-                message: "parameter wasn't found".into(),
-            }]),
-        )
-            .into_response(),
         Err(ForceWithdrawalError::InvalidParameter(parameter)) => (
             StatusCode::BAD_REQUEST,
             Json([InvalidParameter {

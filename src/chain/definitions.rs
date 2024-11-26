@@ -24,14 +24,14 @@ pub struct BlockHash(pub H256);
 impl BlockHash {
     /// Convert block hash to RPC-friendly format
     pub fn to_string(&self) -> String {
-        format!("0x{}", const_hex::encode(&self.0))
+        format!("0x{}", const_hex::encode(self.0))
     }
 
     /// Convert string returned by RPC to typesafe block
     ///
     /// TODO: integrate nicely with serde
     pub fn from_str(s: &str) -> Result<Self, crate::error::ChainError> {
-        let block_hash_raw = unhex(&s, NotHexError::BlockHash)?;
+        let block_hash_raw = unhex(s, NotHexError::BlockHash)?;
         Ok(BlockHash(H256(
             block_hash_raw
                 .try_into()
@@ -129,7 +129,7 @@ impl Invoice {
         if let Some(asset_id) = currency.asset_id {
             let balance = asset_balance_at_account(
                 client,
-                &block,
+                block,
                 &chain_watcher.metadata,
                 &self.address,
                 asset_id,
@@ -138,7 +138,7 @@ impl Invoice {
             Ok(balance)
         } else {
             let balance =
-                system_balance_at_account(client, &block, &chain_watcher.metadata, &self.address)
+                system_balance_at_account(client, block, &chain_watcher.metadata, &self.address)
                     .await?;
             Ok(balance)
         }

@@ -92,7 +92,7 @@ pub struct CliArgs {
 
 pub struct SeedEnvVars {
     pub seed: String,
-    #[allow(dead_code)] // TODO: Do we actually need this?
+    #[expect(dead_code)] // TODO: Do we actually need this?
     pub old_seeds: AHashMap<String, String>,
 }
 

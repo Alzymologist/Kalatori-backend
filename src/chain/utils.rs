@@ -92,7 +92,7 @@ pub fn construct_single_asset_transfer_call(
                             index_transfer_in_methods,
                         )?;
 
-                        for field in method_selector.selected.fields_to_fill.iter_mut() {
+                        for field in &mut method_selector.selected.fields_to_fill {
                             if let Some(ref mut field_name) = field.field_name {
                                 match field_name.as_str() {
                                     "target" => {
@@ -137,7 +137,7 @@ pub fn construct_single_asset_transfer_call(
                                                             asset_transfer_constructor
                                                                 .to_account
                                                                 .to_owned(),
-                                                        )
+                                                        );
                                                     }
                                                 }
                                             }
@@ -269,7 +269,7 @@ pub fn construct_batch_transaction(
     transaction_to_fill.call = construct_batch_call(metadata, call_set)?.0;
 
     // set era to mortal
-    for ext in transaction_to_fill.extensions.iter_mut() {
+    for ext in &mut transaction_to_fill.extensions {
         match ext.content {
             TypeContentToFill::Composite(ref mut fields) => {
                 if fields.len() == 1 {
@@ -301,7 +301,7 @@ pub fn construct_batch_transaction(
         transaction_to_fill.try_default_tip_assets_in_given_asset(&mut (), metadata, asset);
     }
 
-    for ext in transaction_to_fill.extensions.iter_mut() {
+    for ext in &mut transaction_to_fill.extensions {
         if ext.finalize().is_none() {
             println!("{ext:?}");
         }
@@ -374,10 +374,8 @@ pub fn construct_batch_call(
                                     .type_to_fill
                                     .content
                             {
-                                calls_sequence.content = call_set
-                                    .iter()
-                                    .map(|call| call.0.content.to_owned())
-                                    .collect();
+                                calls_sequence.content =
+                                    call_set.iter().map(|call| call.0.content.clone()).collect();
                             }
                         }
                     }
@@ -432,12 +430,12 @@ pub fn construct_single_balance_transfer_call(
                         match variant_method.name.as_str() {
                             "transfer_keep_alive" => {
                                 if !balance_transfer_constructor.is_clearing {
-                                    index_transfer_in_methods = Some(index_method)
+                                    index_transfer_in_methods = Some(index_method);
                                 }
                             }
                             "transfer_all" => {
                                 if balance_transfer_constructor.is_clearing {
-                                    index_transfer_in_methods = Some(index_method)
+                                    index_transfer_in_methods = Some(index_method);
                                 }
                             }
                             _ => {}
@@ -455,7 +453,7 @@ pub fn construct_single_balance_transfer_call(
                             index_transfer_in_methods,
                         )?;
 
-                        for field in method_selector.selected.fields_to_fill.iter_mut() {
+                        for field in &mut method_selector.selected.fields_to_fill {
                             if let Some(ref mut field_name) = field.field_name {
                                 match field_name.as_str() {
                                     "dest" => {
@@ -500,7 +498,7 @@ pub fn construct_single_balance_transfer_call(
                                                             balance_transfer_constructor
                                                                 .to_account
                                                                 .to_owned(),
-                                                        )
+                                                        );
                                                     }
                                                 }
                                             }
@@ -647,7 +645,7 @@ pub fn was_balance_received_at_account(
     balance_transfer_event_fields: &[FieldData],
 ) -> bool {
     let mut found_receiver = None;
-    for field in balance_transfer_event_fields.iter() {
+    for field in balance_transfer_event_fields {
         if let Some(ref field_name) = field.field_name {
             if field_name == "to" {
                 if let ParsedData::Id(ref account_id32) = field.data.data {
@@ -683,9 +681,8 @@ pub fn asset_balance_query(
             .iter()
             .enumerate()
         {
-            match pallet.prefix.as_str() {
-                "Assets" => index_assets_in_pallet_selector = Some(index),
-                _ => {}
+            if pallet.prefix.as_str() == "Assets" {
+                index_assets_in_pallet_selector = Some(index);
             }
             if index_assets_in_pallet_selector.is_some() {
                 break;
@@ -784,9 +781,8 @@ pub fn system_balance_query(
             .iter()
             .enumerate()
         {
-            match pallet.prefix.as_str() {
-                "System" => index_system_in_pallet_selector = Some(index),
-                _ => {}
+            if pallet.prefix.as_str() == "System" {
+                index_system_in_pallet_selector = Some(index);
             }
             if index_system_in_pallet_selector.is_some() {
                 break;
@@ -833,7 +829,7 @@ pub fn system_balance_query(
                             ref mut account_to_fill,
                         )) = key_to_fill.content
                         {
-                            *account_to_fill = Some(*account_id)
+                            *account_to_fill = Some(*account_id);
                         }
                     }
                 }
@@ -866,10 +862,10 @@ pub fn whole_key_u32_value(
     metadata_v15: &RuntimeMetadataV15,
     entered_data: u32,
 ) -> Result<String, ChainError> {
-    for pallet in metadata_v15.pallets.iter() {
+    for pallet in &metadata_v15.pallets {
         if let Some(storage) = &pallet.storage {
             if storage.prefix == prefix {
-                for entry in storage.entries.iter() {
+                for entry in &storage.entries {
                     if entry.name == storage_name {
                         match &entry.ty {
                             StorageEntryType::Plain(_) => {
@@ -1083,7 +1079,7 @@ pub fn pallet_index(metadata: &RuntimeMetadataV15, name: &str) -> Option<u8> {
             return Some(pallet.index);
         }
     }
-    return None;
+    None
 }
 
 pub fn storage_key(prefix: &str, storage_name: &str) -> String {

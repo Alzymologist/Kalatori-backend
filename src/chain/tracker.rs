@@ -29,7 +29,7 @@ use crate::{
     utils::task_tracker::TaskTracker,
 };
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub fn start_chain_watch(
     chain: Chain,
     chain_tx: mpsc::Sender<ChainTrackerRequest>,
@@ -53,14 +53,14 @@ pub fn start_chain_watch(
                     break;
                 }
 
-                let _ = rpc_update_tx.send(RpcInfo {
+                let _unused = rpc_update_tx.send(RpcInfo {
                     chain_name: chain.name.clone(),
                     rpc_url: endpoint.clone(),
                     status: Health::Degraded,
                 }).await;
 
                 if let Ok(client) = WsClientBuilder::default().build(endpoint).await {
-                    let _ = rpc_update_tx.send(RpcInfo {
+                    let _unused = rpc_update_tx.send(RpcInfo {
                         chain_name: chain.name.clone(),
                         rpc_url: endpoint.clone(),
                         status: Health::Ok,
@@ -184,7 +184,7 @@ pub fn start_chain_watch(
                         }
                     }
                 } else {
-                    let _ = rpc_update_tx.send(RpcInfo {
+                    let _unused = rpc_update_tx.send(RpcInfo {
                         chain_name: chain.name.clone(),
                         rpc_url: endpoint.clone(),
                         status: Health::Critical,

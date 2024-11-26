@@ -13,11 +13,11 @@ use crate::{
         },
         Version,
     },
-    error::{DbError, Error},
+    error::DbError,
     utils::task_tracker::TaskTracker,
 };
 use codec::{Decode, Encode};
-use names::{Generator, Name};
+use names::Generator;
 use std::time::SystemTime;
 use substrate_crypto_light::common::AccountId32;
 use tokio::sync::{mpsc, oneshot};
@@ -98,7 +98,7 @@ impl Database {
                     DbRequest::ActiveOrderList(res) => {
                         let _unused = res.send(Ok(orders
                             .iter()
-                            .filter_map(|a| a.ok())
+                            .filter_map(std::result::Result::ok)
                             .filter_map(|(a, b)| {
                                 match (String::decode(&mut &a[..]), OrderInfo::decode(&mut &b[..]))
                                 {

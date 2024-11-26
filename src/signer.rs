@@ -141,7 +141,7 @@ struct Sign {
 pub fn entropy_from_phrase(seed: &str) -> Result<Entropy, SignerError> {
     let mut word_set = WordSet::new();
     for word in seed.split(' ') {
-        word_set.add_word(&word, &InternalWordList)?;
+        word_set.add_word(word, &InternalWordList)?;
     }
     Ok(word_set.to_entropy()?)
 }
